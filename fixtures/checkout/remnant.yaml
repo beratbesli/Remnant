@@ -14,7 +14,7 @@ sources:
     database: 0
 
 oracle:
-  command: docker compose -f fixtures/checkout/docker-compose.yml run --rm app python /app/reproduce.py
+  command: docker compose -f fixtures/checkout/docker-compose.yml exec -T app python /app/reproduce.py
   timeout: 60s
   failure_exit_code: 1
 
