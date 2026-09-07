@@ -1,0 +1,28 @@
+version: 1
+
+project:
+  name: checkout-fixture
+
+sources:
+  postgres:
+    type: postgres
+    url_env: DATABASE_URL
+    schema: public
+  redis:
+    type: redis
+    url_env: REDIS_URL
+    database: 0
+
+oracle:
+  command: docker compose -f fixtures/checkout/docker-compose.yml run --rm app python /app/reproduce.py
+  timeout: 60s
+  failure_exit_code: 1
+
+reduction:
+  strategy: hierarchical
+  state_dir: .remnant
+  max_experiments: 10000
+
+safety:
+  allow_non_local: false
+  require_fingerprint: true

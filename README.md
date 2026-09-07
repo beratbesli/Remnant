@@ -8,7 +8,7 @@ The core is deterministic and works without AI or cloud services. AI integration
 
 ## Status
 
-Remnant is under active development toward its first usable release. The current foundation includes a typed, validated project configuration and a working CLI bootstrap. PostgreSQL, Redis, snapshot, reduction, reporting, and agent-interface milestones are being added incrementally.
+The first usable workflow is implemented: PostgreSQL and Redis snapshots, a command oracle, resumable reduction sessions, JSON/text reports, deterministic relationship hypotheses, and a Docker Compose fixture.
 
 ## Quick start
 
@@ -20,6 +20,22 @@ cargo run -- doctor
 ```
 
 The generated `remnant.yaml` keeps credentials out of the repository by referring to environment variables. Destructive operations will require a verified environment fingerprint before they can run.
+
+## End-to-end fixture
+
+With Docker and Docker Compose installed:
+
+    ./fixtures/checkout/run-demo.sh
+
+The fixture seeds 101 PostgreSQL users, 51 subscriptions, and 101 Redis keys. Its reproducer fails only when the active pro subscription and the stale user:174:plan Redis key coexist. Remnant verifies the failure, captures a baseline, performs real restore-and-oracle experiments, and emits a reduction report.
+
+To run an assertion-based fixture check:
+
+    ./fixtures/checkout/test-fixture.sh
+
+The fixture uses host ports 55432 for PostgreSQL and 56379 for Redis. Tear it down, including its data volumes, with:
+
+    docker compose -f fixtures/checkout/docker-compose.yml down -v
 
 ## Design principles
 
@@ -37,7 +53,7 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-The Docker-based integration fixture will be documented here as soon as the adapter and reducer milestones are complete.
+The Docker-based integration fixture is described above; the optional TUI and MCP stdio interface are planned for the next milestone.
 
 ## License
 
