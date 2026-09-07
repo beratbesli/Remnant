@@ -29,4 +29,10 @@ pub enum RemnantError {
 
     #[error("oracle process failed while collecting output: {0}")]
     OracleProcess(#[source] std::io::Error),
+
+    #[error("state adapter error: {0}")]
+    Adapter(String),
+
+    #[error("snapshot is invalid: {0}")]
+    InvalidSnapshot(String),
 }
