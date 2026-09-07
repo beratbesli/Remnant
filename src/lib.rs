@@ -6,6 +6,8 @@
 
 pub mod config;
 pub mod error;
+pub mod oracle;
 
 pub use config::{ProjectConfig, SourceConfig};
 pub use error::{RemnantError, Result};
+pub use oracle::{Oracle, OracleOutcome, OracleResult};

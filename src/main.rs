@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use remnant::config::{CONFIG_FILE_NAME, ProjectConfig};
+use remnant::oracle::{Oracle, OracleOutcome};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,6 +34,8 @@ enum Command {
     },
     /// Validate configuration and local prerequisites.
     Doctor,
+    /// Run the configured reproducer and verify the expected failure.
+    Verify,
 }
 
 fn main() -> Result<()> {
@@ -42,7 +45,35 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Init { force } => init(&cli.project, force, cli.json),
         Command::Doctor => doctor(&cli.project, cli.json),
+        Command::Verify => verify(&cli.project, cli.json),
     }
+}
+
+#[tokio::main]
+async fn verify_async(path: &PathBuf, json: bool) -> Result<()> {
+    let config = ProjectConfig::load(path)?;
+    let result = Oracle::new(config.oracle).run().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("Oracle: {}", result.command);
+        println!("Outcome: {:?}", result.outcome);
+        println!("Duration: {}ms", result.duration_ms);
+        if !result.stdout.is_empty() {
+            println!("stdout:\n{}", result.stdout.trim_end());
+        }
+        if !result.stderr.is_empty() {
+            println!("stderr:\n{}", result.stderr.trim_end());
+        }
+    }
+    if result.outcome != OracleOutcome::FailureReproduced {
+        anyhow::bail!("configured oracle did not reproduce the expected failure");
+    }
+    Ok(())
+}
+
+fn verify(path: &PathBuf, json: bool) -> Result<()> {
+    verify_async(path, json)
 }
 
 fn init(path: &PathBuf, force: bool, json: bool) -> Result<()> {

@@ -23,4 +23,10 @@ pub enum RemnantError {
 
     #[error("unsupported operation: {0}")]
     Unsupported(String),
+
+    #[error("oracle process could not be started: {0}")]
+    OracleStart(#[source] std::io::Error),
+
+    #[error("oracle process failed while collecting output: {0}")]
+    OracleProcess(#[source] std::io::Error),
 }
