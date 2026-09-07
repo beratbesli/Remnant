@@ -81,6 +81,8 @@ enum Command {
         #[arg(long)]
         confirm: bool,
     },
+    /// Serve the controlled MCP-compatible JSON-RPC interface over stdio.
+    Mcp,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -95,6 +97,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Status { session } => status(&cli, session.clone()),
         Command::Report { session, output } => report(&cli, session.clone(), output.clone()),
         Command::Replay { session, confirm } => replay(&cli, session.clone(), *confirm).await,
+        Command::Mcp => crate::mcp::serve(cli.project.clone()).await,
     }
 }
 

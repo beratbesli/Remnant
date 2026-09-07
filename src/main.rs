@@ -1,4 +1,5 @@
 mod cli;
+mod mcp;
 
 use anyhow::Result;
 use clap::Parser;
