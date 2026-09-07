@@ -402,5 +402,12 @@ fn validate_snapshot(snapshot: &SourceSnapshot, source: &str, kind: &str) -> Res
             snapshot.kind, snapshot.source
         )));
     }
+    let actual_fingerprint = crate::model::fingerprint(&snapshot.payload);
+    if actual_fingerprint != snapshot.fingerprint {
+        return Err(RemnantError::InvalidSnapshot(format!(
+            "fingerprint mismatch for {source}: expected {}, got {actual_fingerprint}",
+            snapshot.fingerprint
+        )));
+    }
     Ok(())
 }

@@ -192,6 +192,13 @@ impl StateSource for RedisAdapter {
                 self.name, snapshot.kind, snapshot.source
             )));
         }
+        let actual_fingerprint = crate::model::fingerprint(&snapshot.payload);
+        if actual_fingerprint != snapshot.fingerprint {
+            return Err(RemnantError::InvalidSnapshot(format!(
+                "fingerprint mismatch for {}: expected {}, got {actual_fingerprint}",
+                self.name, snapshot.fingerprint
+            )));
+        }
         let payload: RedisSnapshot = serde_json::from_value(snapshot.payload.clone())
             .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
         let mut connection = self.connection().await?;

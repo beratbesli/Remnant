@@ -113,14 +113,16 @@ impl<'a> ReductionEngine<'a> {
         project: impl Into<String>,
         strategy: impl Into<String>,
     ) -> Result<ReductionSession> {
+        let (baseline, objects) = capture_sources(self.sources).await?;
+        restore_sources(self.sources, &baseline, None).await?;
         let baseline_oracle = self.oracle.run().await?;
+        restore_sources(self.sources, &baseline, None).await?;
         if baseline_oracle.outcome != OracleOutcome::FailureReproduced {
             return Err(RemnantError::InvalidConfig(format!(
                 "cannot start reduction: baseline oracle outcome was {:?}",
                 baseline_oracle.outcome
             )));
         }
-        let (baseline, objects) = capture_sources(self.sources).await?;
         let retained_ids = objects.iter().map(|object| object.id.clone()).collect();
         let now = Utc::now();
         let session = ReductionSession {
