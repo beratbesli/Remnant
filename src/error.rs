@@ -35,4 +35,7 @@ pub enum RemnantError {
 
     #[error("snapshot is invalid: {0}")]
     InvalidSnapshot(String),
+
+    #[error("session persistence error: {0}")]
+    Persistence(String),
 }

@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
@@ -28,6 +29,11 @@ pub struct OracleResult {
     pub started_at: DateTime<Utc>,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[async_trait]
+pub trait OracleRunner: Send + Sync {
+    async fn run(&self) -> Result<OracleResult>;
 }
 
 impl OracleResult {
@@ -95,6 +101,13 @@ impl Oracle {
         self.config
             .timeout_duration()
             .unwrap_or(Duration::from_secs(30))
+    }
+}
+
+#[async_trait]
+impl OracleRunner for Oracle {
+    async fn run(&self) -> Result<OracleResult> {
+        Oracle::run(self).await
     }
 }
 

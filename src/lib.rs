@@ -9,6 +9,8 @@ pub mod config;
 pub mod error;
 pub mod model;
 pub mod oracle;
+pub mod persistence;
+pub mod reducer;
 pub mod snapshot;
 
 pub use config::{ProjectConfig, SourceConfig};
