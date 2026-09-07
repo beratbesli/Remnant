@@ -432,7 +432,7 @@ fn print_result(session: &ReductionSession, json: bool) -> Result<()> {
         println!("Failure reproduced: {}", result.failure_reproduced);
         println!("Minimality: {}", result.minimality);
         println!("Experiments: {}", result.experiments);
-        println!("Report: remnant report --session {}", session.id);
+        println!("Report: remnant report {}", session.id);
     }
     Ok(())
 }

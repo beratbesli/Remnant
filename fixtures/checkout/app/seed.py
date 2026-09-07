@@ -14,16 +14,20 @@ with psycopg.connect(database_url) as connection:
             CREATE TABLE IF NOT EXISTS users (
                 id integer PRIMARY KEY,
                 name text NOT NULL
-            );
+            )
+            """
+        )
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id integer PRIMARY KEY,
                 user_id integer NOT NULL,
                 plan text NOT NULL,
                 status text NOT NULL
-            );
-            TRUNCATE TABLE subscriptions, users;
+            )
             """
         )
+        cursor.execute("TRUNCATE TABLE subscriptions, users")
         cursor.executemany(
             "INSERT INTO users (id, name) VALUES (%s, %s)",
             [(user_id, f"noise-user-{user_id}") for user_id in range(1, 101)],
