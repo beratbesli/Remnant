@@ -53,7 +53,22 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-The Docker-based integration fixture is described above; the optional TUI and MCP stdio interface are planned for the next milestone.
+The Docker-based integration fixture is described above. A controlled,
+MCP-compatible JSON-RPC interface is available over stdio:
+
+```bash
+remnant --project remnant.yaml mcp
+```
+
+See [docs/mcp.md](docs/mcp.md) for the supported tools and safety boundaries.
+The optional TUI remains planned for a later milestone.
+
+## Security
+
+Remnant restores database and cache state and can execute a configured oracle.
+Use it only in isolated, disposable environments. Read
+[SECURITY.md](SECURITY.md) before testing real data or accepting configuration
+from another person.
 
 ## License
 
