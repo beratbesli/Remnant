@@ -113,7 +113,7 @@ async fn call_tool(project: &PathBuf, name: &str, arguments: &Value) -> Result<V
             "valid": true,
             "project": config.project.name,
             "missing_environment_variables": config.missing_environment_variables(),
-            "oracle_command": config.oracle.command,
+            "oracle_command": config.oracle.display_command(),
         })),
         "verify_failure" => {
             let result = Oracle::new(config.oracle).run().await?;

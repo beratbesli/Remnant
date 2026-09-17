@@ -158,7 +158,7 @@ async fn doctor(path: &PathBuf, json: bool) -> Result<()> {
         "sources": sources_report,
         "missing_environment_variables": missing,
         "docker_available": docker_available,
-        "oracle_command": config.oracle.command,
+        "oracle_command": config.oracle.display_command(),
         "state_dir": config.resolve_state_dir(path),
     });
     if json {

@@ -60,16 +60,31 @@ impl SourceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OracleConfig {
+    /// A shell command when `args` is empty, otherwise the executable path.
     pub command: String,
+    /// Optional structured arguments. When present, the command is executed
+    /// directly without a shell.
+    #[serde(default)]
+    pub args: Vec<String>,
     #[serde(default = "default_timeout")]
     pub timeout: String,
     #[serde(default = "default_failure_exit_code")]
     pub failure_exit_code: i32,
+    #[serde(default = "default_max_output_bytes")]
+    pub max_output_bytes: usize,
 }
 
 impl OracleConfig {
     pub fn timeout_duration(&self) -> Result<Duration> {
         parse_duration(&self.timeout)
+    }
+
+    pub fn display_command(&self) -> String {
+        if self.args.is_empty() {
+            "shell command".to_string()
+        } else {
+            format!("{} ({} arguments)", self.command, self.args.len())
+        }
     }
 }
 
@@ -167,6 +182,13 @@ impl ProjectConfig {
         self.oracle
             .timeout_duration()
             .map_err(|error| RemnantError::InvalidConfig(format!("oracle.timeout: {error}")))?;
+        if self.oracle.max_output_bytes == 0
+            || self.oracle.max_output_bytes > MAX_ORACLE_OUTPUT_BYTES
+        {
+            return Err(RemnantError::InvalidConfig(format!(
+                "oracle.max_output_bytes must be between 1 and {MAX_ORACLE_OUTPUT_BYTES}"
+            )));
+        }
         if self.reduction.strategy != "hierarchical" && self.reduction.strategy != "ddmin" {
             return Err(RemnantError::InvalidConfig(format!(
                 "reduction.strategy must be hierarchical or ddmin, got {}",
@@ -228,8 +250,10 @@ impl Default for ProjectConfig {
             sources,
             oracle: OracleConfig {
                 command: "./scripts/reproduce.sh".to_string(),
+                args: Vec::new(),
                 timeout: default_timeout(),
                 failure_exit_code: default_failure_exit_code(),
+                max_output_bytes: default_max_output_bytes(),
             },
             reduction: ReductionConfig::default(),
             safety: SafetyConfig::default(),
@@ -285,6 +309,12 @@ fn default_failure_exit_code() -> i32 {
     1
 }
 
+pub const MAX_ORACLE_OUTPUT_BYTES: usize = 1024 * 1024;
+
+fn default_max_output_bytes() -> usize {
+    64 * 1024
+}
+
 fn default_strategy() -> String {
     "hierarchical".to_string()
 }
@@ -338,8 +368,10 @@ mod tests {
     fn durations_are_parsed_without_float_rounding() {
         let oracle = OracleConfig {
             command: "true".to_string(),
+            args: Vec::new(),
             timeout: "500ms".to_string(),
             failure_exit_code: 1,
+            max_output_bytes: default_max_output_bytes(),
         };
         assert_eq!(
             oracle.timeout_duration().expect("duration"),

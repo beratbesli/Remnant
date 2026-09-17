@@ -988,6 +988,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "libc",
  "redis",
  "serde",
  "serde_json",

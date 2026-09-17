@@ -214,6 +214,8 @@ mod tests {
                 started_at: Utc::now(),
                 stdout: String::new(),
                 stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
             },
             experiments: Vec::new(),
             result: Some(ReductionResult {

@@ -272,10 +272,19 @@ impl<'a> ReductionEngine<'a> {
     ) -> Result<Experiment> {
         let started = Instant::now();
         let oracle_result = self.execute_candidate(&session.baseline, candidate).await?;
-        if oracle_result.outcome == OracleOutcome::TimedOut {
-            return Err(RemnantError::Unsupported(
-                "oracle timed out during reduction; no decision was recorded".to_string(),
-            ));
+        match oracle_result.outcome {
+            OracleOutcome::TimedOut => {
+                return Err(RemnantError::Unsupported(
+                    "oracle timed out during reduction; no decision was recorded".to_string(),
+                ));
+            }
+            OracleOutcome::UnexpectedExit => {
+                return Err(RemnantError::Unsupported(format!(
+                    "oracle exited with unexpected status {:?} during reduction; no decision was recorded",
+                    oracle_result.exit_code
+                )));
+            }
+            OracleOutcome::FailureReproduced | OracleOutcome::FailureAbsent => {}
         }
         Ok(Experiment {
             number: session.experiments.len() as u64 + 1,
@@ -356,6 +365,7 @@ fn split_evenly(items: &[String], parts: usize) -> Vec<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
@@ -460,6 +470,8 @@ mod tests {
                 started_at: Utc::now(),
                 stdout: String::new(),
                 stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
             })
         }
     }
@@ -643,6 +655,72 @@ mod tests {
             .expect_err("unavailable oracle must stop capture");
 
         assert!(error.to_string().contains("simulated oracle start failure"));
+        assert_eq!(*state.lock().expect("state lock"), expected);
+    }
+
+    struct UnexpectedExitOracle {
+        state: Arc<Mutex<BTreeSet<String>>>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl OracleRunner for UnexpectedExitOracle {
+        async fn run(&self) -> Result<OracleResult> {
+            let baseline_call = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+            let reproduced = baseline_call && self.state.lock().expect("state lock").contains("a");
+            Ok(OracleResult {
+                command: "fake".to_string(),
+                outcome: if reproduced {
+                    OracleOutcome::FailureReproduced
+                } else {
+                    OracleOutcome::UnexpectedExit
+                },
+                exit_code: Some(if reproduced { 1 } else { 17 }),
+                duration_ms: 0,
+                started_at: Utc::now(),
+                stdout: String::new(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_an_unexpected_oracle_exit_without_recording_a_decision() {
+        let objects = ["a", "b"]
+            .into_iter()
+            .map(|id| StateObject::new(id, "fake", "objects", "item", id, json!({"id": id})))
+            .collect::<Vec<_>>();
+        let state = Arc::new(Mutex::new(
+            objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect::<BTreeSet<_>>(),
+        ));
+        let expected = state.lock().expect("state lock").clone();
+        let source: Box<dyn StateSource> = Box::new(FakeSource {
+            state: Arc::clone(&state),
+            objects,
+            fail_partial_restore: false,
+        });
+        let oracle = UnexpectedExitOracle {
+            state: Arc::clone(&state),
+            calls: AtomicUsize::new(0),
+        };
+        let directory = tempdir().expect("tempdir");
+        let store = SessionStore::new(directory.path());
+        let sources = vec![source];
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100);
+        let mut session = engine.begin("test", "ddmin").await.expect("begin");
+
+        let error = engine
+            .run(&mut session)
+            .await
+            .expect_err("unexpected exit must stop reduction");
+
+        assert!(error.to_string().contains("unexpected status Some(17)"));
+        assert!(session.experiments.is_empty());
         assert_eq!(*state.lock().expect("state lock"), expected);
     }
 }
