@@ -46,6 +46,8 @@ pub struct ReductionResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReductionSession {
+    #[serde(default = "default_session_format_version")]
+    pub format_version: u32,
     pub id: String,
     pub project: String,
     pub status: SessionStatus,
@@ -124,6 +126,7 @@ impl<'a> ReductionEngine<'a> {
         }
         let now = Utc::now();
         let session = ReductionSession {
+            format_version: default_session_format_version(),
             id: format!("session-{}", Uuid::new_v4()),
             project: project.into(),
             status: SessionStatus::Created,
@@ -346,6 +349,12 @@ impl<'a> ReductionEngine<'a> {
             )),
         }
     }
+}
+
+pub const SESSION_FORMAT_VERSION: u32 = 1;
+
+fn default_session_format_version() -> u32 {
+    SESSION_FORMAT_VERSION
 }
 
 fn split_evenly(items: &[String], parts: usize) -> Vec<Vec<String>> {

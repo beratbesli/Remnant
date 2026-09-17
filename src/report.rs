@@ -167,7 +167,9 @@ mod tests {
     use super::*;
     use crate::model::{Snapshot, SourceSnapshot, StateObject};
     use crate::oracle::{OracleOutcome, OracleResult};
-    use crate::reducer::{ReductionResult, ReductionSession, SessionStatus};
+    use crate::reducer::{
+        ReductionResult, ReductionSession, SESSION_FORMAT_VERSION, SessionStatus,
+    };
 
     #[test]
     fn report_counts_retained_objects_by_source() {
@@ -183,6 +185,7 @@ mod tests {
             StateObject::new("redis:key", "redis", "redis:user", "key", "key", json!({})),
         ];
         let session = ReductionSession {
+            format_version: SESSION_FORMAT_VERSION,
             id: "session-test".to_string(),
             project: "test".to_string(),
             status: SessionStatus::Completed,

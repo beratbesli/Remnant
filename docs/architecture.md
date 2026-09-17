@@ -9,7 +9,7 @@ Remnant is a black-box, cross-service persistent-state reducer. The CLI, JSON ou
 3. Snapshot orchestration captures one typed baseline per source and derives stable StateObject identifiers.
 4. The oracle runs the user-provided command and treats the configured exit code as failure reproduced.
 5. ReductionEngine applies hierarchical ddmin. Each candidate is restored from the baseline, tested by the oracle, recorded, and followed by a full baseline restore.
-6. SessionStore atomically persists the complete session after every experiment.
+6. SessionStore atomically and durably persists a versioned complete session after every experiment.
 7. Reports include counts, retained objects, relationship hypotheses, and experiment evidence.
 
 ## Minimality guarantee
@@ -22,7 +22,7 @@ PostgreSQL scalar values and Redis key segments are matched deterministically to
 
 ## Safety boundary
 
-Mutating commands refuse suspicious non-local URLs unless the project enables safety.allow_non_local or the operator passes --allow-non-local. Replay also requires --confirm. Baseline payloads carry source fingerprints, and any adapter or restore error aborts the session.
+Mutating commands refuse suspicious non-local URLs unless the project enables safety.allow_non_local or the operator passes --allow-non-local. Replay also requires --confirm. Baseline payloads carry source fingerprints, and any adapter or restore error aborts the session. Session files are private, size-bounded, fsynced before replacement, and rejected when malformed or from an unsupported format version.
 
 ## Extension point
 
