@@ -362,7 +362,7 @@ fn ttl_matches(expected: i64, actual: i64) -> bool {
     }
 }
 
-fn redis_object_id_from_base64(key_base64: &str) -> String {
+pub(crate) fn redis_object_id_from_base64(key_base64: &str) -> String {
     match STANDARD.decode(key_base64) {
         Ok(key) => format!("redis:{}", URL_SAFE_NO_PAD.encode(key)),
         Err(_) => format!("redis:invalid-{key_base64}"),

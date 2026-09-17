@@ -6,6 +6,7 @@ use tokio::process::Command as ProcessCommand;
 
 use remnant::adapters::from_config;
 use remnant::config::{CONFIG_FILE_NAME, ProjectConfig};
+use remnant::export::export_reproduction_bundle;
 use remnant::graph::StateGraph;
 use remnant::model::group_objects;
 use remnant::oracle::{Oracle, OracleOutcome};
@@ -81,6 +82,14 @@ enum Command {
         #[arg(long)]
         confirm: bool,
     },
+    /// Export a portable Docker reproduction bundle from a completed session.
+    Export {
+        /// Session id. Defaults to the newest session.
+        session: Option<String>,
+        /// New directory to create for the bundle.
+        #[arg(long, default_value = "remnant-reproduction")]
+        output: PathBuf,
+    },
     /// Serve the controlled MCP-compatible JSON-RPC interface over stdio.
     Mcp,
 }
@@ -97,6 +106,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Status { session } => status(&cli, session.clone()),
         Command::Report { session, output } => report(&cli, session.clone(), output.clone()),
         Command::Replay { session, confirm } => replay(&cli, session.clone(), *confirm).await,
+        Command::Export { session, output } => export(&cli, session.clone(), output.clone()),
         Command::Mcp => crate::mcp::serve(cli.project.clone()).await,
     }
 }
@@ -394,6 +404,22 @@ async fn replay(cli: &Cli, session_id: Option<String>, confirm: bool) -> Result<
             session.retained_ids.len(),
             session.id
         );
+    }
+    Ok(())
+}
+
+fn export(cli: &Cli, session_id: Option<String>, output: PathBuf) -> Result<()> {
+    let config = load_config(&cli.project)?;
+    let store = SessionStore::new(config.resolve_state_dir(&cli.project));
+    let session = load_selected(&store, session_id.as_deref())?;
+    export_reproduction_bundle(&config, &cli.project, &session, &output)?;
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({"bundle": output, "session": session.id})
+        );
+    } else {
+        println!("Exported reproduction bundle to {}", output.display());
     }
     Ok(())
 }

@@ -27,7 +27,7 @@ With Docker and Docker Compose installed:
 
     ./fixtures/checkout/run-demo.sh
 
-The fixture seeds 101 PostgreSQL users, 51 subscriptions, and 101 Redis keys. Its reproducer fails only when the active pro subscription and the stale user:174:plan Redis key coexist. Remnant verifies the failure, captures a baseline, performs real restore-and-oracle experiments, and emits a reduction report.
+The fixture seeds PostgreSQL rows and Redis keys of several native types. Its reproducer fails only when the active pro subscription and the stale user:174:plan Redis key coexist. Remnant verifies the failure, captures a baseline, performs real restore-and-oracle experiments, emits a reduction report, and exports/replays a portable Docker bundle.
 
 To run an assertion-based fixture check:
 

@@ -47,4 +47,14 @@ Only `failure_exit_code` means the known failure was reproduced. Exit code `0` m
 
 After reaching a 1-minimal candidate, Remnant restores and runs it `reduction.verification_runs` times (default 3). Every run must reproduce the configured failure; otherwise the reduction is marked failed rather than presented as reliable.
 
+To export a portable bundle, declare the Docker build context and the command that runs inside it. Additional environment variables may only reference the bundle’s isolated PostgreSQL or Redis URL, keeping credentials out of the export:
+
+    reproduction:
+      app:
+        build_context: app
+        command: python /app/reproduce.py
+        environment:
+          APP_DATABASE_URL: postgres_url
+          APP_REDIS_URL: redis_url
+
 The PostgreSQL adapter enumerates non-system base tables, captures rows as JSON, and restores sequence/identity positions. Tables with primary keys use key values for stable object IDs; tables without primary keys use a row-content digest. Redis keys and values are captured byte-for-byte with native DUMP/RESTORE payloads. Key names are Base64-encoded in snapshots so binary keys remain portable, and TTLs are restored and verified with a small elapsed-time allowance.

@@ -26,3 +26,11 @@ reduction:
 safety:
   allow_non_local: false
   require_fingerprint: true
+
+reproduction:
+  app:
+    build_context: app
+    command: python /app/reproduce.py
+    environment:
+      FIXTURE_DATABASE_URL: postgres_url
+      FIXTURE_REDIS_URL: redis_url

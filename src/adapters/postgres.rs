@@ -479,7 +479,7 @@ fn dependency_order(snapshot: &PostgresSnapshot) -> Result<Vec<usize>> {
     Ok(order)
 }
 
-fn postgres_object_id(table: &PostgresTableSnapshot, row: &Value) -> String {
+pub(crate) fn postgres_object_id(table: &PostgresTableSnapshot, row: &Value) -> String {
     let key = if table.primary_key.is_empty() {
         digest_bytes(
             serde_json::to_string(row)

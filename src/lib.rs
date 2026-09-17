@@ -7,6 +7,7 @@
 pub mod adapters;
 pub mod config;
 pub mod error;
+pub mod export;
 pub mod graph;
 pub mod model;
 pub mod oracle;
@@ -16,7 +17,7 @@ pub mod report;
 pub mod safety;
 pub mod snapshot;
 
-pub use config::{ProjectConfig, SourceConfig};
+pub use config::{ProjectConfig, ReproductionConfig, SourceConfig};
 pub use error::{RemnantError, Result};
 pub use model::{
     CandidateSet, Snapshot, SourceDescription, SourceSnapshot, StateGroup, StateObject,

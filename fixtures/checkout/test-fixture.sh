@@ -14,6 +14,12 @@ cargo run --quiet -- --project "$project_file" verify
 cargo run --quiet -- --project "$project_file" reduce --json > /tmp/remnant-fixture-result.json
 cargo run --quiet -- --project "$project_file" report --json > /tmp/remnant-fixture-report.json
 
+bundle_root="$(mktemp -d)"
+bundle_path="$bundle_root/remnant-reproduction"
+trap 'rm -rf "$bundle_root"' EXIT
+cargo run --quiet -- --project "$project_file" export --output "$bundle_path"
+"$bundle_path/reproduce.sh"
+
 python3 - <<'PY'
 import json
 
@@ -29,5 +35,7 @@ assert result["verification_successes"] == 3, result
 assert report["failure_reproduced"] is True
 assert report["reduced_count"] == result["retained_count"]
 assert report["experiments"] > 0
+assert report["verification_runs"] == result["verification_runs"]
+assert report["verification_successes"] == result["verification_successes"]
 print(f"fixture reduction verified: {report['original_count']} -> {report['reduced_count']} objects")
 PY

@@ -21,6 +21,8 @@ pub struct ProjectConfig {
     pub reduction: ReductionConfig,
     #[serde(default)]
     pub safety: SafetyConfig,
+    #[serde(default)]
+    pub reproduction: Option<ReproductionConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -106,6 +108,26 @@ pub struct SafetyConfig {
     pub allow_non_local: bool,
     #[serde(default = "default_require_fingerprint")]
     pub require_fingerprint: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReproductionConfig {
+    pub app: ReproductionAppConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReproductionAppConfig {
+    pub build_context: PathBuf,
+    pub command: String,
+    #[serde(default)]
+    pub environment: BTreeMap<String, ReproductionEnvironmentValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReproductionEnvironmentValue {
+    PostgresUrl,
+    RedisUrl,
 }
 
 impl Default for ReductionConfig {
@@ -208,6 +230,23 @@ impl ProjectConfig {
                 "reduction.verification_runs must be greater than zero".to_string(),
             ));
         }
+        if let Some(reproduction) = &self.reproduction {
+            if reproduction.app.build_context.as_os_str().is_empty() {
+                return Err(RemnantError::InvalidConfig(
+                    "reproduction.app.build_context must not be empty".to_string(),
+                ));
+            }
+            if reproduction.app.command.trim().is_empty() {
+                return Err(RemnantError::InvalidConfig(
+                    "reproduction.app.command must not be empty".to_string(),
+                ));
+            }
+            for name in reproduction.app.environment.keys() {
+                validate_env_name(name).map_err(|error| {
+                    RemnantError::InvalidConfig(format!("reproduction.app.environment: {error}"))
+                })?;
+            }
+        }
         Ok(())
     }
 
@@ -230,6 +269,20 @@ impl ProjectConfig {
             .filter(|name| env::var(name).is_err())
             .map(ToOwned::to_owned)
             .collect()
+    }
+
+    pub fn resolve_reproduction_context(&self, config_path: impl AsRef<Path>) -> Option<PathBuf> {
+        self.reproduction.as_ref().map(|reproduction| {
+            let config_dir = config_path
+                .as_ref()
+                .parent()
+                .unwrap_or_else(|| Path::new("."));
+            if reproduction.app.build_context.is_absolute() {
+                reproduction.app.build_context.clone()
+            } else {
+                config_dir.join(&reproduction.app.build_context)
+            }
+        })
     }
 }
 
@@ -265,6 +318,7 @@ impl Default for ProjectConfig {
             },
             reduction: ReductionConfig::default(),
             safety: SafetyConfig::default(),
+            reproduction: None,
         }
     }
 }
