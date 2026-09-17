@@ -8,7 +8,9 @@ use serde_json::json;
 
 use super::StateSource;
 use crate::error::{RemnantError, Result};
-use crate::model::{SourceDescription, SourceSnapshot, StateObject, digest_bytes};
+use crate::model::{
+    SNAPSHOT_FORMAT_VERSION, SourceDescription, SourceSnapshot, StateObject, digest_bytes,
+};
 
 #[derive(Debug, Clone)]
 pub struct RedisAdapter {
@@ -172,6 +174,7 @@ impl StateSource for RedisAdapter {
         let decoded: RedisSnapshot = serde_json::from_value(payload.clone())
             .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
         Ok(SourceSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
             source: self.name.clone(),
             kind: "redis".to_string(),
             captured_at: Utc::now(),

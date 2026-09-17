@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use crate::adapters::StateSource;
 use crate::error::{RemnantError, Result};
-use crate::model::{Snapshot, SourceSnapshot, StateObject, fingerprint};
+use crate::model::{SNAPSHOT_FORMAT_VERSION, Snapshot, SourceSnapshot, StateObject, fingerprint};
+
+const MAX_SNAPSHOT_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 pub async fn capture_sources(
     sources: &[Box<dyn StateSource>],
@@ -25,6 +27,7 @@ pub async fn capture_sources(
             .collect::<BTreeMap<_, _>>(),
     }));
     let snapshot = Snapshot {
+        format_version: SNAPSHOT_FORMAT_VERSION,
         id: format!("snapshot-{}", Uuid::new_v4()),
         captured_at: Utc::now(),
         sources: source_snapshots,
@@ -108,15 +111,35 @@ fn validate_snapshot_for_sources(
 }
 
 fn validate_snapshot(snapshot: &Snapshot) -> Result<()> {
+    if snapshot.format_version != SNAPSHOT_FORMAT_VERSION {
+        return Err(RemnantError::InvalidSnapshot(format!(
+            "snapshot format version {} is not supported; expected {SNAPSHOT_FORMAT_VERSION}",
+            snapshot.format_version
+        )));
+    }
     let mut source_fingerprints = BTreeMap::new();
     for (name, source) in &snapshot.sources {
+        if source.format_version != SNAPSHOT_FORMAT_VERSION {
+            return Err(RemnantError::InvalidSnapshot(format!(
+                "source {name} uses unsupported snapshot format version {}; expected {SNAPSHOT_FORMAT_VERSION}",
+                source.format_version
+            )));
+        }
         if source.source != *name {
             return Err(RemnantError::InvalidSnapshot(format!(
                 "snapshot source name mismatch: map key {name}, payload {}",
                 source.source
             )));
         }
-        let actual = fingerprint(&source.payload);
+        let payload = serde_json::to_vec(&source.payload)
+            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        if payload.len() > MAX_SNAPSHOT_PAYLOAD_BYTES {
+            return Err(RemnantError::InvalidSnapshot(format!(
+                "source {name} payload is {} bytes, limit is {MAX_SNAPSHOT_PAYLOAD_BYTES}",
+                payload.len()
+            )));
+        }
+        let actual = crate::model::digest_bytes(&payload);
         if actual != source.fingerprint {
             return Err(RemnantError::InvalidSnapshot(format!(
                 "fingerprint mismatch for source {name}: expected {}, got {actual}",
@@ -133,4 +156,23 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unknown_snapshot_format_before_restore() {
+        let sources = BTreeMap::new();
+        let snapshot = Snapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION + 1,
+            id: "snapshot-test".to_string(),
+            captured_at: Utc::now(),
+            sources,
+            fingerprint: fingerprint(&json!({"sources": BTreeMap::<String, String>::new()})),
+        };
+
+        assert!(validate_snapshot(&snapshot).is_err());
+    }
 }

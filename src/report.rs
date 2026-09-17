@@ -165,7 +165,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::model::{Snapshot, SourceSnapshot, StateObject};
+    use crate::model::{SNAPSHOT_FORMAT_VERSION, Snapshot, SourceSnapshot, StateObject};
     use crate::oracle::{OracleOutcome, OracleResult};
     use crate::reducer::{
         ReductionResult, ReductionSession, SESSION_FORMAT_VERSION, SessionStatus,
@@ -193,11 +193,13 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             baseline: Snapshot {
+                format_version: SNAPSHOT_FORMAT_VERSION,
                 id: "snapshot-test".to_string(),
                 captured_at: Utc::now(),
                 sources: BTreeMap::from([(
                     "fake".to_string(),
                     SourceSnapshot {
+                        format_version: SNAPSHOT_FORMAT_VERSION,
                         source: "fake".to_string(),
                         kind: "fake".to_string(),
                         captured_at: Utc::now(),

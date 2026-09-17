@@ -421,6 +421,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let payload = json!({"objects": objects});
             Ok(SourceSnapshot {
+                format_version: crate::model::SNAPSHOT_FORMAT_VERSION,
                 source: "fake".to_string(),
                 kind: "fake".to_string(),
                 captured_at: Utc::now(),

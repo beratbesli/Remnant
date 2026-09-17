@@ -56,6 +56,8 @@ pub struct SourceDescription {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceSnapshot {
+    #[serde(default = "default_snapshot_format_version")]
+    pub format_version: u32,
     pub source: String,
     pub kind: String,
     pub captured_at: DateTime<Utc>,
@@ -66,10 +68,18 @@ pub struct SourceSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Snapshot {
+    #[serde(default = "default_snapshot_format_version")]
+    pub format_version: u32,
     pub id: String,
     pub captured_at: DateTime<Utc>,
     pub sources: BTreeMap<String, SourceSnapshot>,
     pub fingerprint: String,
+}
+
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+
+fn default_snapshot_format_version() -> u32 {
+    SNAPSHOT_FORMAT_VERSION
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

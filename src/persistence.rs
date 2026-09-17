@@ -177,7 +177,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::model::Snapshot;
+    use crate::model::{SNAPSHOT_FORMAT_VERSION, Snapshot};
     use crate::oracle::{OracleOutcome, OracleResult};
     use crate::reducer::SessionStatus;
 
@@ -191,6 +191,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             baseline: Snapshot {
+                format_version: SNAPSHOT_FORMAT_VERSION,
                 id: "snapshot-test".to_string(),
                 captured_at: Utc::now(),
                 sources: BTreeMap::new(),

@@ -8,7 +8,9 @@ use tokio_postgres::{Client, NoTls};
 
 use super::StateSource;
 use crate::error::{RemnantError, Result};
-use crate::model::{SourceDescription, SourceSnapshot, StateObject, digest_bytes};
+use crate::model::{
+    SNAPSHOT_FORMAT_VERSION, SourceDescription, SourceSnapshot, StateObject, digest_bytes,
+};
 
 #[derive(Debug, Clone)]
 pub struct PostgresAdapter {
@@ -239,6 +241,7 @@ impl StateSource for PostgresAdapter {
             .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
         let object_count = self.objects_from_payload(&decoded).len();
         Ok(SourceSnapshot {
+            format_version: SNAPSHOT_FORMAT_VERSION,
             source: self.name.clone(),
             kind: "postgres".to_string(),
             captured_at: Utc::now(),
