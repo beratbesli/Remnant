@@ -48,10 +48,7 @@ pub fn is_local_target(url: &str) -> bool {
     matches!(
         host,
         "localhost" | "127.0.0.1" | "::1" | "postgres" | "redis" | "db" | "database" | "cache"
-    ) || (!host.contains('.')
-        && !host.contains("prod")
-        && !host.contains("rds")
-        && !host.contains("amazonaws"))
+    )
 }
 
 #[cfg(test)]
@@ -69,5 +66,6 @@ mod tests {
     fn rejects_hostnames_that_look_remote() {
         assert!(!is_local_target("postgres://prod-db.example.com:5432/app"));
         assert!(!is_local_target("redis://cache.amazonaws.com:6379"));
+        assert!(!is_local_target("postgres://staging:5432/app"));
     }
 }

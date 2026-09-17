@@ -39,7 +39,6 @@ pub struct ReportObject {
     pub group: String,
     pub kind: String,
     pub label: String,
-    pub value: serde_json::Value,
     pub fingerprint: String,
 }
 
@@ -71,7 +70,6 @@ impl ReductionReport {
                 group: object.group.clone(),
                 kind: object.kind.clone(),
                 label: object.label.clone(),
-                value: object.value.clone(),
                 fingerprint: object.fingerprint.clone(),
             })
             .collect();
@@ -238,5 +236,7 @@ mod tests {
         let report = ReductionReport::from_session(&session).expect("report");
         assert_eq!(report.counts_by_source["postgres"].retained, 1);
         assert_eq!(report.counts_by_source["redis"].retained, 0);
+        let rendered = serde_json::to_value(&report).expect("serialize report");
+        assert!(rendered["retained_objects"][0].get("value").is_none());
     }
 }

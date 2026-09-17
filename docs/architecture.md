@@ -24,6 +24,6 @@ PostgreSQL scalar values and Redis key segments are matched deterministically to
 
 Mutating commands refuse suspicious non-local URLs unless the project enables safety.allow_non_local or the operator passes --allow-non-local. Replay also requires --confirm. Baseline payloads carry source fingerprints, and any adapter or restore error aborts the session. Session files are private, size-bounded, fsynced before replacement, and rejected when malformed or from an unsupported format version.
 
-## Extension point
+## Supported scope
 
-New databases implement StateSource and define a serializable SourceSnapshot payload. The reducer does not need to know the storage technology. Future adapters can add message queues, files, MongoDB, S3-compatible storage, or Kubernetes-backed state without creating a second reduction implementation.
+The current trusted core supports PostgreSQL rows and Redis keys only. Additional data sources are intentionally out of scope until the snapshot, restore, and verification guarantees for these two adapters are fully proven.
