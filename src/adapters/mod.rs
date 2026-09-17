@@ -16,6 +16,11 @@ pub trait StateSource: Send + Sync {
     async fn describe(&self) -> Result<SourceDescription>;
     async fn enumerate_state(&self) -> Result<Vec<StateObject>>;
     async fn snapshot(&self) -> Result<SourceSnapshot>;
+    /// A redacted, configuration-scoped identity for the exact mutation
+    /// target. It is persisted with a baseline and compared before restores.
+    async fn target_identity(&self) -> Result<String> {
+        Ok(self.describe().await?.endpoint)
+    }
     fn objects_from_snapshot(&self, snapshot: &SourceSnapshot) -> Result<Vec<StateObject>>;
     async fn restore(
         &self,

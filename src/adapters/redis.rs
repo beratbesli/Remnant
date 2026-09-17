@@ -182,6 +182,14 @@ impl StateSource for RedisAdapter {
         <Self as StateSource>::objects_from_snapshot(self, &snapshot)
     }
 
+    async fn target_identity(&self) -> Result<String> {
+        Ok(format!(
+            "{} database={}",
+            redacted_endpoint(&self.url),
+            self.database
+        ))
+    }
+
     fn objects_from_snapshot(&self, snapshot: &SourceSnapshot) -> Result<Vec<StateObject>> {
         let payload = self.decode_snapshot(snapshot)?;
         Ok(self.objects_from_payload(&payload))
@@ -199,6 +207,7 @@ impl StateSource for RedisAdapter {
             format_version: SNAPSHOT_FORMAT_VERSION,
             source: self.name.clone(),
             kind: "redis".to_string(),
+            target_identity: String::new(),
             captured_at: Utc::now(),
             fingerprint: crate::model::fingerprint(&payload),
             object_count: decoded.entries.len(),

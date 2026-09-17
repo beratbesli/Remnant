@@ -60,6 +60,8 @@ pub struct SourceSnapshot {
     pub format_version: u32,
     pub source: String,
     pub kind: String,
+    #[serde(default)]
+    pub target_identity: String,
     pub captured_at: DateTime<Utc>,
     pub fingerprint: String,
     pub object_count: usize,
@@ -76,7 +78,7 @@ pub struct Snapshot {
     pub fingerprint: String,
 }
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
 
 fn default_snapshot_format_version() -> u32 {
     // Version 1 did not encode Redis keys byte-safely. Missing markers are

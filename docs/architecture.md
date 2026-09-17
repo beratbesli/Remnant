@@ -22,7 +22,7 @@ PostgreSQL scalar values and Redis key segments are matched deterministically to
 
 ## Safety boundary
 
-Mutating commands refuse suspicious non-local URLs unless the project enables safety.allow_non_local or the operator passes --allow-non-local. Replay also requires --confirm. Baseline payloads carry source fingerprints, and any adapter or restore error aborts the session. Session files are private, size-bounded, fsynced before replacement, and rejected when malformed or from an unsupported format version.
+Mutating commands refuse suspicious non-local URLs unless the project enables safety.allow_non_local or the operator passes --allow-non-local. Replay also requires --confirm. Baseline payloads carry source fingerprints and redacted, schema/database-scoped target identities; either mismatch aborts before a restore. Session files are private, size-bounded, fsynced before replacement, and rejected when malformed or from an unsupported format version.
 
 ## Supported scope
 

@@ -271,6 +271,14 @@ impl StateSource for PostgresAdapter {
         <Self as StateSource>::objects_from_snapshot(self, &snapshot)
     }
 
+    async fn target_identity(&self) -> Result<String> {
+        Ok(format!(
+            "{} schema={}",
+            redacted_endpoint(&self.url),
+            self.schema.as_deref().unwrap_or("<all-user-schemas>")
+        ))
+    }
+
     fn objects_from_snapshot(&self, snapshot: &SourceSnapshot) -> Result<Vec<StateObject>> {
         validate_snapshot(snapshot, &self.name, "postgres")?;
         let payload: PostgresSnapshot = serde_json::from_value(snapshot.payload.clone())
@@ -303,6 +311,7 @@ impl StateSource for PostgresAdapter {
             format_version: SNAPSHOT_FORMAT_VERSION,
             source: self.name.clone(),
             kind: "postgres".to_string(),
+            target_identity: String::new(),
             captured_at: Utc::now(),
             fingerprint,
             object_count,

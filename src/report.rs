@@ -208,6 +208,7 @@ mod tests {
                         format_version: SNAPSHOT_FORMAT_VERSION,
                         source: "fake".to_string(),
                         kind: "fake".to_string(),
+                        target_identity: "fake".to_string(),
                         captured_at: Utc::now(),
                         fingerprint: "fingerprint".to_string(),
                         object_count: 2,

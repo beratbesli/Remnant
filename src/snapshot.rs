@@ -16,7 +16,8 @@ pub async fn capture_sources(
     let mut source_snapshots = BTreeMap::new();
     let mut objects = Vec::new();
     for source in sources {
-        let snapshot = source.snapshot().await?;
+        let mut snapshot = source.snapshot().await?;
+        snapshot.target_identity = source.target_identity().await?;
         objects.extend(source.objects_from_snapshot(&snapshot)?);
         source_snapshots.insert(source.name().to_string(), snapshot);
     }
@@ -79,6 +80,15 @@ pub async fn verify_sources(
         let source_snapshot = snapshot.sources.get(source.name()).ok_or_else(|| {
             RemnantError::InvalidSnapshot(format!("snapshot has no source named {}", source.name()))
         })?;
+        let actual_target = source.target_identity().await?;
+        if source_snapshot.target_identity != actual_target {
+            return Err(RemnantError::UnsafeOperation(format!(
+                "source {} target identity changed: expected {}, found {}",
+                source.name(),
+                source_snapshot.target_identity,
+                actual_target
+            )));
+        }
         if let Err(error) = source.verify_restored(source_snapshot, retained).await {
             failures.push(format!("{}: {error}", source.name()));
         }
@@ -129,6 +139,11 @@ fn validate_snapshot(snapshot: &Snapshot) -> Result<()> {
             return Err(RemnantError::InvalidSnapshot(format!(
                 "snapshot source name mismatch: map key {name}, payload {}",
                 source.source
+            )));
+        }
+        if source.target_identity.trim().is_empty() {
+            return Err(RemnantError::InvalidSnapshot(format!(
+                "source {name} has no target identity"
             )));
         }
         let payload = serde_json::to_vec(&source.payload)

@@ -418,6 +418,7 @@ mod tests {
     #[derive(Clone)]
     struct FakeSource {
         state: Arc<Mutex<BTreeSet<String>>>,
+        target: Arc<Mutex<String>>,
         objects: Vec<StateObject>,
         fail_partial_restore: bool,
     }
@@ -432,7 +433,7 @@ mod tests {
             Ok(crate::model::SourceDescription {
                 name: "fake".to_string(),
                 kind: "fake".to_string(),
-                endpoint: "memory".to_string(),
+                endpoint: self.target.lock().expect("target lock").clone(),
                 capabilities: vec!["restore_subset".to_string()],
             })
         }
@@ -454,6 +455,7 @@ mod tests {
                 format_version: crate::model::SNAPSHOT_FORMAT_VERSION,
                 source: "fake".to_string(),
                 kind: "fake".to_string(),
+                target_identity: String::new(),
                 captured_at: Utc::now(),
                 fingerprint: crate::model::fingerprint(&payload),
                 object_count: payload["objects"].as_array().map_or(0, Vec::len),
@@ -542,6 +544,7 @@ mod tests {
         ));
         let source: Box<dyn StateSource> = Box::new(FakeSource {
             state: Arc::clone(&state),
+            target: Arc::new(Mutex::new("memory".to_string())),
             objects,
             fail_partial_restore: false,
         });
@@ -600,6 +603,7 @@ mod tests {
         ));
         let source: Box<dyn StateSource> = Box::new(FakeSource {
             state: Arc::clone(&state),
+            target: Arc::new(Mutex::new("memory".to_string())),
             objects,
             fail_partial_restore: false,
         });
@@ -624,6 +628,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refuses_to_mutate_when_the_restore_target_changes() {
+        let objects = ["a", "b"]
+            .into_iter()
+            .map(|id| StateObject::new(id, "fake", "objects", "item", id, json!({"id": id})))
+            .collect::<Vec<_>>();
+        let state = Arc::new(Mutex::new(
+            objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect::<BTreeSet<_>>(),
+        ));
+        let expected = state.lock().expect("state lock").clone();
+        let target = Arc::new(Mutex::new("memory-a".to_string()));
+        let source: Box<dyn StateSource> = Box::new(FakeSource {
+            state: Arc::clone(&state),
+            target: Arc::clone(&target),
+            objects,
+            fail_partial_restore: false,
+        });
+        let oracle = FakeOracle {
+            state: Arc::clone(&state),
+        };
+        let directory = tempdir().expect("tempdir");
+        let store = SessionStore::new(directory.path());
+        let sources = vec![source];
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100, 3);
+        let mut session = engine.begin("test", "ddmin").await.expect("begin");
+
+        *target.lock().expect("target lock") = "memory-b".to_string();
+        let error = engine
+            .run(&mut session)
+            .await
+            .expect_err("target change must stop reduction");
+
+        assert!(error.to_string().contains("target identity changed"));
+        assert_eq!(*state.lock().expect("state lock"), expected);
+    }
+
+    #[tokio::test]
     async fn recovers_the_baseline_after_a_partial_candidate_restore_failure() {
         let objects = ["a", "b"]
             .into_iter()
@@ -638,6 +681,7 @@ mod tests {
         let expected = state.lock().expect("state lock").clone();
         let source: Box<dyn StateSource> = Box::new(FakeSource {
             state: Arc::clone(&state),
+            target: Arc::new(Mutex::new("memory".to_string())),
             objects,
             fail_partial_restore: true,
         });
@@ -693,6 +737,7 @@ mod tests {
         let expected = state.lock().expect("state lock").clone();
         let source: Box<dyn StateSource> = Box::new(FakeSource {
             state: Arc::clone(&state),
+            target: Arc::new(Mutex::new("memory".to_string())),
             objects,
             fail_partial_restore: false,
         });
@@ -753,6 +798,7 @@ mod tests {
         let expected = state.lock().expect("state lock").clone();
         let source: Box<dyn StateSource> = Box::new(FakeSource {
             state: Arc::clone(&state),
+            target: Arc::new(Mutex::new("memory".to_string())),
             objects,
             fail_partial_restore: false,
         });
