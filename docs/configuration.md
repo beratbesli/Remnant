@@ -27,6 +27,7 @@ Remnant reads YAML from remnant.yaml by default.
       strategy: hierarchical
       state_dir: .remnant
       max_experiments: 10000
+      verification_runs: 3
 
     safety:
       allow_non_local: false
@@ -43,5 +44,7 @@ With no `args` field, `command` retains the compatible shell-command behavior; k
       failure_exit_code: 1
 
 Only `failure_exit_code` means the known failure was reproduced. Exit code `0` means it was absent; all other codes, launch failures, and timeouts invalidate the experiment. Remnant starts each oracle in its own process group and kills that group on timeout. It retains at most `max_output_bytes` from each output stream (default 64 KiB, maximum 1 MiB).
+
+After reaching a 1-minimal candidate, Remnant restores and runs it `reduction.verification_runs` times (default 3). Every run must reproduce the configured failure; otherwise the reduction is marked failed rather than presented as reliable.
 
 The PostgreSQL adapter enumerates non-system base tables, captures rows as JSON, and restores sequence/identity positions. Tables with primary keys use key values for stable object IDs; tables without primary keys use a row-content digest. Redis keys and values are captured byte-for-byte with native DUMP/RESTORE payloads. Key names are Base64-encoded in snapshots so binary keys remain portable, and TTLs are restored and verified with a small elapsed-time allowance.

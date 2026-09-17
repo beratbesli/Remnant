@@ -141,8 +141,13 @@ async fn call_tool(project: &PathBuf, name: &str, arguments: &Value) -> Result<V
             ensure_mutation_allowed(&config, false)?;
             let sources = from_config(&config)?;
             let oracle = Oracle::new(config.oracle.clone());
-            let engine =
-                ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
+            let engine = ReductionEngine::new(
+                &sources,
+                &oracle,
+                &store,
+                config.reduction.max_experiments,
+                config.reduction.verification_runs,
+            );
             let session = engine
                 .begin(config.project.name, config.reduction.strategy)
                 .await?;
@@ -159,8 +164,13 @@ async fn call_tool(project: &PathBuf, name: &str, arguments: &Value) -> Result<V
             let sources = from_config(&config)?;
             let oracle = Oracle::new(config.oracle.clone());
             let mut session = store.load(&session_id)?;
-            let engine =
-                ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
+            let engine = ReductionEngine::new(
+                &sources,
+                &oracle,
+                &store,
+                config.reduction.max_experiments,
+                config.reduction.verification_runs,
+            );
             engine.run(&mut session).await?;
             Ok(serde_json::to_value(session.result)?)
         }

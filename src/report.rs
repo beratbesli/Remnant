@@ -20,6 +20,8 @@ pub struct ReductionReport {
     pub experiments: usize,
     pub failure_reproduced: bool,
     pub minimality: String,
+    pub verification_runs: u32,
+    pub verification_successes: u32,
     pub counts_by_source: BTreeMap<String, SourceCounts>,
     pub retained_objects: Vec<ReportObject>,
     pub evidence: Vec<Experiment>,
@@ -88,6 +90,8 @@ impl ReductionReport {
             experiments: session.experiments.len(),
             failure_reproduced: result.failure_reproduced,
             minimality: result.minimality.clone(),
+            verification_runs: result.verification_runs,
+            verification_successes: result.verification_successes,
             counts_by_source,
             retained_objects,
             evidence: session.experiments.clone(),
@@ -115,6 +119,10 @@ impl ReductionReport {
             if self.failure_reproduced { "YES" } else { "NO" }
         ));
         output.push_str(&format!("Minimality: {}\n\n", self.minimality));
+        output.push_str(&format!(
+            "Verification: {}/{} reproductions\n\n",
+            self.verification_successes, self.verification_runs
+        ));
         output.push_str("COUNTS BY SOURCE\n");
         for (source, counts) in &self.counts_by_source {
             output.push_str(&format!(
@@ -229,6 +237,8 @@ mod tests {
                 failure_reproduced: true,
                 minimality: "1-minimal".to_string(),
                 experiments: 1,
+                verification_runs: 3,
+                verification_successes: 3,
             }),
             last_error: None,
             objects,

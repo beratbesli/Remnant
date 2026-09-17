@@ -24,6 +24,8 @@ with open("/tmp/remnant-fixture-report.json", encoding="utf-8") as handle:
 
 assert result["failure_reproduced"] is True
 assert result["retained_count"] <= 3, result
+assert result["verification_runs"] == 3, result
+assert result["verification_successes"] == 3, result
 assert report["failure_reproduced"] is True
 assert report["reduced_count"] == result["retained_count"]
 assert report["experiments"] > 0

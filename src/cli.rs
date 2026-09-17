@@ -226,7 +226,13 @@ async fn capture(cli: &Cli) -> Result<()> {
     let sources = from_config(&config)?;
     let oracle = Oracle::new(config.oracle.clone());
     let store = SessionStore::new(config.resolve_state_dir(&cli.project));
-    let engine = ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
+    let engine = ReductionEngine::new(
+        &sources,
+        &oracle,
+        &store,
+        config.reduction.max_experiments,
+        config.reduction.verification_runs,
+    );
     let session = engine
         .begin(config.project.name, config.reduction.strategy)
         .await?;
@@ -239,7 +245,13 @@ async fn reduce(cli: &Cli) -> Result<()> {
     let sources = from_config(&config)?;
     let oracle = Oracle::new(config.oracle.clone());
     let store = SessionStore::new(config.resolve_state_dir(&cli.project));
-    let engine = ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
+    let engine = ReductionEngine::new(
+        &sources,
+        &oracle,
+        &store,
+        config.reduction.max_experiments,
+        config.reduction.verification_runs,
+    );
     let mut session = engine
         .begin(config.project.name, config.reduction.strategy)
         .await?;
@@ -254,7 +266,13 @@ async fn resume(cli: &Cli, session_id: &str) -> Result<()> {
     let oracle = Oracle::new(config.oracle.clone());
     let store = SessionStore::new(config.resolve_state_dir(&cli.project));
     let mut session = store.load(session_id)?;
-    let engine = ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
+    let engine = ReductionEngine::new(
+        &sources,
+        &oracle,
+        &store,
+        config.reduction.max_experiments,
+        config.reduction.verification_runs,
+    );
     engine.run(&mut session).await?;
     print_result(&session, cli.json)
 }

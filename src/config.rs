@@ -96,6 +96,8 @@ pub struct ReductionConfig {
     pub state_dir: PathBuf,
     #[serde(default = "default_max_experiments")]
     pub max_experiments: u64,
+    #[serde(default = "default_verification_runs")]
+    pub verification_runs: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,6 +114,7 @@ impl Default for ReductionConfig {
             strategy: default_strategy(),
             state_dir: default_state_dir(),
             max_experiments: default_max_experiments(),
+            verification_runs: default_verification_runs(),
         }
     }
 }
@@ -198,6 +201,11 @@ impl ProjectConfig {
         if self.reduction.max_experiments == 0 {
             return Err(RemnantError::InvalidConfig(
                 "reduction.max_experiments must be greater than zero".to_string(),
+            ));
+        }
+        if self.reduction.verification_runs == 0 {
+            return Err(RemnantError::InvalidConfig(
+                "reduction.verification_runs must be greater than zero".to_string(),
             ));
         }
         Ok(())
@@ -325,6 +333,10 @@ fn default_state_dir() -> PathBuf {
 
 fn default_max_experiments() -> u64 {
     10_000
+}
+
+fn default_verification_runs() -> u32 {
+    3
 }
 
 fn default_require_fingerprint() -> bool {

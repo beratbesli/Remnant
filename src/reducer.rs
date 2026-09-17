@@ -42,6 +42,10 @@ pub struct ReductionResult {
     pub failure_reproduced: bool,
     pub minimality: String,
     pub experiments: u64,
+    #[serde(default)]
+    pub verification_runs: u32,
+    #[serde(default)]
+    pub verification_successes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -93,6 +97,7 @@ pub struct ReductionEngine<'a> {
     oracle: &'a dyn OracleRunner,
     store: &'a SessionStore,
     max_experiments: u64,
+    verification_runs: u32,
 }
 
 impl<'a> ReductionEngine<'a> {
@@ -101,12 +106,14 @@ impl<'a> ReductionEngine<'a> {
         oracle: &'a dyn OracleRunner,
         store: &'a SessionStore,
         max_experiments: u64,
+        verification_runs: u32,
     ) -> Self {
         Self {
             sources,
             oracle,
             store,
             max_experiments,
+            verification_runs,
         }
     }
 
@@ -243,15 +250,25 @@ impl<'a> ReductionEngine<'a> {
         }
 
         let retained: BTreeSet<String> = current.iter().cloned().collect();
-        let final_result = self
-            .test_candidate(session, &retained, &BTreeSet::new())
-            .await?;
-        if final_result.outcome != OracleOutcome::FailureReproduced {
-            return Err(RemnantError::Unsupported(
-                "final retained candidate no longer reproduces the failure".to_string(),
-            ));
+        let mut verification_successes = 0;
+        for verification_index in 0..self.verification_runs {
+            self.ensure_experiment_capacity(session)?;
+            let verification = self
+                .test_candidate(session, &retained, &BTreeSet::new())
+                .await?;
+            let reproduced = verification.outcome == OracleOutcome::FailureReproduced;
+            session.experiments.push(verification);
+            session.updated_at = Utc::now();
+            self.store.save(session)?;
+            if !reproduced {
+                return Err(RemnantError::Unsupported(format!(
+                    "minimum candidate did not reproduce the failure during verification run {}/{}",
+                    verification_index + 1,
+                    self.verification_runs
+                )));
+            }
+            verification_successes += 1;
         }
-        session.experiments.push(final_result);
         session.retained_ids = retained.clone();
         session.result = Some(ReductionResult {
             original_count,
@@ -261,6 +278,8 @@ impl<'a> ReductionEngine<'a> {
             failure_reproduced: true,
             minimality: "1-minimal".to_string(),
             experiments: session.experiments.len() as u64,
+            verification_runs: self.verification_runs,
+            verification_successes,
         });
         session.updated_at = Utc::now();
         self.store.save(session)?;
@@ -299,6 +318,17 @@ impl<'a> ReductionEngine<'a> {
             baseline_fingerprint: session.baseline.fingerprint.clone(),
             recorded_at: Utc::now(),
         })
+    }
+
+    fn ensure_experiment_capacity(&self, session: &ReductionSession) -> Result<()> {
+        if session.experiments.len() as u64 >= self.max_experiments {
+            Err(RemnantError::Unsupported(format!(
+                "reduction reached max_experiments ({}) before reaching local minimality",
+                self.max_experiments
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     /// Run one candidate through the only mutation lifecycle used by reduction.
@@ -521,7 +551,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let store = SessionStore::new(directory.path());
         let sources = vec![source];
-        let engine = ReductionEngine::new(&sources, &oracle, &store, 100);
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100, 3);
         let mut session = engine.begin("test", "ddmin").await.expect("begin");
         engine.run(&mut session).await.expect("reduce");
         assert_eq!(session.status, SessionStatus::Completed);
@@ -532,6 +562,18 @@ mod tests {
         assert_eq!(
             session.result.as_ref().expect("result").minimality,
             "1-minimal"
+        );
+        assert_eq!(
+            session.result.as_ref().expect("result").verification_runs,
+            3
+        );
+        assert_eq!(
+            session
+                .result
+                .as_ref()
+                .expect("result")
+                .verification_successes,
+            3
         );
         assert!(store.load(&session.id).is_ok());
         assert_eq!(
@@ -567,7 +609,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let store = SessionStore::new(directory.path());
         let sources = vec![source];
-        let engine = ReductionEngine::new(&sources, &oracle, &store, 100);
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100, 3);
         let mut session = engine.begin("test", "ddmin").await.expect("begin");
 
         state.lock().expect("state lock").remove("a");
@@ -605,7 +647,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let store = SessionStore::new(directory.path());
         let sources = vec![source];
-        let engine = ReductionEngine::new(&sources, &oracle, &store, 100);
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100, 3);
         let session = engine.begin("test", "ddmin").await.expect("begin");
 
         let error = engine
@@ -657,7 +699,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let store = SessionStore::new(directory.path());
         let sources = vec![source];
-        let engine = ReductionEngine::new(&sources, &UnavailableOracle, &store, 100);
+        let engine = ReductionEngine::new(&sources, &UnavailableOracle, &store, 100, 3);
 
         let error = engine
             .begin("test", "ddmin")
@@ -721,7 +763,7 @@ mod tests {
         let directory = tempdir().expect("tempdir");
         let store = SessionStore::new(directory.path());
         let sources = vec![source];
-        let engine = ReductionEngine::new(&sources, &oracle, &store, 100);
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100, 3);
         let mut session = engine.begin("test", "ddmin").await.expect("begin");
 
         let error = engine
