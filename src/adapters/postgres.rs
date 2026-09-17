@@ -405,6 +405,12 @@ fn validate_snapshot(snapshot: &SourceSnapshot, source: &str, kind: &str) -> Res
             snapshot.kind, snapshot.source
         )));
     }
+    if snapshot.format_version != SNAPSHOT_FORMAT_VERSION {
+        return Err(RemnantError::InvalidSnapshot(format!(
+            "PostgreSQL snapshot format version {} is not supported; expected {SNAPSHOT_FORMAT_VERSION}",
+            snapshot.format_version
+        )));
+    }
     let actual_fingerprint = crate::model::fingerprint(&snapshot.payload);
     if actual_fingerprint != snapshot.fingerprint {
         return Err(RemnantError::InvalidSnapshot(format!(

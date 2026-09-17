@@ -1,16 +1,15 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use base64::Engine;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::StateSource;
 use crate::error::{RemnantError, Result};
-use crate::model::{
-    SNAPSHOT_FORMAT_VERSION, SourceDescription, SourceSnapshot, StateObject, digest_bytes,
-};
+use crate::model::{SNAPSHOT_FORMAT_VERSION, SourceDescription, SourceSnapshot, StateObject};
 
 #[derive(Debug, Clone)]
 pub struct RedisAdapter {
@@ -27,11 +26,22 @@ pub struct RedisSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RedisEntry {
-    pub key: String,
+    /// Redis keys are bytes, not UTF-8 strings. Base64 preserves arbitrary
+    /// binary keys in the portable JSON snapshot format.
+    pub key_base64: String,
     pub kind: String,
     pub ttl_ms: i64,
     pub payload_base64: String,
 }
+
+struct DecodedRedisEntry {
+    key: Vec<u8>,
+    kind: String,
+    ttl_ms: i64,
+    payload: Vec<u8>,
+}
+
+const TTL_RESTORE_DRIFT_MS: i64 = 5_000;
 
 impl RedisAdapter {
     pub fn new(name: impl Into<String>, url: impl Into<String>, database: u8) -> Self {
@@ -66,7 +76,7 @@ impl RedisAdapter {
         let mut cursor = 0u64;
         let mut entries = Vec::new();
         loop {
-            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            let (next, keys): (u64, Vec<Vec<u8>>) = redis::cmd("SCAN")
                 .arg(cursor)
                 .arg("COUNT")
                 .arg(500)
@@ -78,22 +88,28 @@ impl RedisAdapter {
                     .arg(&key)
                     .query_async(&mut connection)
                     .await
-                    .map_err(|error| RemnantError::Adapter(format!("redis type {key}: {error}")))?;
+                    .map_err(|error| RemnantError::Adapter(format!("redis type: {error}")))?;
+                if kind == "none" {
+                    continue;
+                }
                 let ttl_ms: i64 = redis::cmd("PTTL")
                     .arg(&key)
                     .query_async(&mut connection)
                     .await
-                    .map_err(|error| RemnantError::Adapter(format!("redis ttl {key}: {error}")))?;
+                    .map_err(|error| RemnantError::Adapter(format!("redis ttl: {error}")))?;
+                if ttl_ms == -2 {
+                    continue;
+                }
                 let payload: Vec<u8> = redis::cmd("DUMP")
                     .arg(&key)
                     .query_async(&mut connection)
                     .await
-                    .map_err(|error| RemnantError::Adapter(format!("redis dump {key}: {error}")))?;
+                    .map_err(|error| RemnantError::Adapter(format!("redis dump: {error}")))?;
                 entries.push(RedisEntry {
-                    key,
+                    key_base64: STANDARD.encode(&key),
                     kind,
                     ttl_ms,
-                    payload_base64: base64::engine::general_purpose::STANDARD.encode(payload),
+                    payload_base64: STANDARD.encode(payload),
                 });
             }
             cursor = next;
@@ -101,7 +117,7 @@ impl RedisAdapter {
                 break;
             }
         }
-        entries.sort_by(|left, right| left.key.cmp(&right.key));
+        entries.sort_by(|left, right| left.key_base64.cmp(&right.key_base64));
         Ok(entries)
     }
 
@@ -111,20 +127,33 @@ impl RedisAdapter {
             .iter()
             .map(|entry| {
                 let value = json!({
-                    "key": entry.key,
+                    "key_base64": entry.key_base64,
                     "type": entry.kind,
                     "ttl_ms": entry.ttl_ms,
                 });
                 StateObject::new(
-                    redis_object_id(&entry.key),
+                    redis_object_id_from_base64(&entry.key_base64),
                     self.name.clone(),
-                    redis_group(&entry.key),
+                    redis_group(&entry.key_base64),
                     "redis_key",
-                    entry.key.clone(),
+                    redis_label(&entry.key_base64),
                     value,
                 )
             })
             .collect()
+    }
+
+    fn decode_snapshot(&self, snapshot: &SourceSnapshot) -> Result<RedisSnapshot> {
+        validate_snapshot(snapshot, &self.name, "redis")?;
+        let payload: RedisSnapshot = serde_json::from_value(snapshot.payload.clone())
+            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        if payload.database != self.database {
+            return Err(RemnantError::InvalidSnapshot(format!(
+                "redis snapshot database {} does not match configured database {}",
+                payload.database, self.database
+            )));
+        }
+        Ok(payload)
     }
 }
 
@@ -154,14 +183,7 @@ impl StateSource for RedisAdapter {
     }
 
     fn objects_from_snapshot(&self, snapshot: &SourceSnapshot) -> Result<Vec<StateObject>> {
-        if snapshot.source != self.name || snapshot.kind != "redis" {
-            return Err(RemnantError::InvalidSnapshot(format!(
-                "expected redis snapshot for {}, got {} snapshot for {}",
-                self.name, snapshot.kind, snapshot.source
-            )));
-        }
-        let payload: RedisSnapshot = serde_json::from_value(snapshot.payload.clone())
-            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        let payload = self.decode_snapshot(snapshot)?;
         Ok(self.objects_from_payload(&payload))
     }
 
@@ -189,93 +211,233 @@ impl StateSource for RedisAdapter {
         snapshot: &SourceSnapshot,
         retained: Option<&BTreeSet<String>>,
     ) -> Result<()> {
-        if snapshot.source != self.name || snapshot.kind != "redis" {
-            return Err(RemnantError::InvalidSnapshot(format!(
-                "expected redis snapshot for {}, got {} snapshot for {}",
-                self.name, snapshot.kind, snapshot.source
-            )));
-        }
-        let actual_fingerprint = crate::model::fingerprint(&snapshot.payload);
-        if actual_fingerprint != snapshot.fingerprint {
-            return Err(RemnantError::InvalidSnapshot(format!(
-                "fingerprint mismatch for {}: expected {}, got {actual_fingerprint}",
-                self.name, snapshot.fingerprint
-            )));
-        }
-        let payload: RedisSnapshot = serde_json::from_value(snapshot.payload.clone())
-            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        let payload = self.decode_snapshot(snapshot)?;
+        let all_entries = decode_entries(&payload.entries)?;
+        let candidate_entries = select_entries(&payload.entries, retained)?;
         let mut connection = self.connection().await?;
-        let mut cursor = 0u64;
-        loop {
-            let (next, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                .arg(cursor)
-                .arg("COUNT")
-                .arg(500)
-                .query_async(&mut connection)
-                .await
-                .map_err(|error| {
-                    RemnantError::Adapter(format!("redis scan before restore: {error}"))
-                })?;
-            if !keys.is_empty() {
-                redis::cmd("DEL")
-                    .arg(keys)
-                    .query_async::<()>(&mut connection)
-                    .await
-                    .map_err(|error| {
-                        RemnantError::Adapter(format!("redis clear before restore: {error}"))
-                    })?;
-            }
-            cursor = next;
-            if cursor == 0 {
-                break;
-            }
+        match replace_entries(&mut connection, &candidate_entries).await {
+            Ok(()) => Ok(()),
+            Err(error) => match replace_entries(&mut connection, &all_entries).await {
+                Ok(()) => Err(error),
+                Err(recovery_error) => Err(RemnantError::UnsafeOperation(format!(
+                    "redis candidate restore failed and full snapshot recovery also failed: {recovery_error}"
+                ))),
+            },
         }
-        for entry in payload.entries {
-            let object_id = redis_object_id(&entry.key);
-            if retained.is_some_and(|ids| !ids.contains(&object_id)) {
-                continue;
-            }
-            let payload = base64::engine::general_purpose::STANDARD
-                .decode(entry.payload_base64)
-                .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
-            let ttl = if entry.ttl_ms > 0 { entry.ttl_ms } else { 0 };
-            redis::cmd("RESTORE")
-                .arg(entry.key)
-                .arg(ttl)
-                .arg(payload)
-                .arg("REPLACE")
-                .query_async::<()>(&mut connection)
-                .await
-                .map_err(|error| {
-                    RemnantError::Adapter(format!("redis restore {object_id}: {error}"))
-                })?;
-        }
-        Ok(())
+    }
+
+    async fn verify_restored(
+        &self,
+        snapshot: &SourceSnapshot,
+        retained: Option<&BTreeSet<String>>,
+    ) -> Result<()> {
+        let payload = self.decode_snapshot(snapshot)?;
+        let expected = select_entries(&payload.entries, retained)?;
+        let actual = self.capture_entries().await?;
+        verify_entries(&expected, &actual)
     }
 }
 
-fn redis_object_id(key: &str) -> String {
-    format!("redis:{key}")
+fn decode_entries(entries: &[RedisEntry]) -> Result<Vec<DecodedRedisEntry>> {
+    entries
+        .iter()
+        .map(|entry| {
+            let key = STANDARD.decode(&entry.key_base64).map_err(|error| {
+                RemnantError::InvalidSnapshot(format!("invalid Redis key: {error}"))
+            })?;
+            let payload = STANDARD.decode(&entry.payload_base64).map_err(|error| {
+                RemnantError::InvalidSnapshot(format!("invalid Redis payload: {error}"))
+            })?;
+            if entry.ttl_ms <= -2 {
+                return Err(RemnantError::InvalidSnapshot(format!(
+                    "invalid Redis TTL {} for {}",
+                    entry.ttl_ms,
+                    redis_label(&entry.key_base64)
+                )));
+            }
+            Ok(DecodedRedisEntry {
+                key,
+                kind: entry.kind.clone(),
+                ttl_ms: entry.ttl_ms,
+                payload,
+            })
+        })
+        .collect()
 }
 
-fn redis_group(key: &str) -> String {
-    let prefix = key.split(':').next().unwrap_or(key);
-    format!("redis:{prefix}")
+fn select_entries(
+    entries: &[RedisEntry],
+    retained: Option<&BTreeSet<String>>,
+) -> Result<Vec<DecodedRedisEntry>> {
+    let selected = entries
+        .iter()
+        .filter(|entry| {
+            retained.is_none_or(|ids| ids.contains(&redis_object_id_from_base64(&entry.key_base64)))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    decode_entries(&selected)
+}
+
+async fn replace_entries(
+    connection: &mut redis::aio::MultiplexedConnection,
+    entries: &[DecodedRedisEntry],
+) -> Result<()> {
+    redis::cmd("FLUSHDB")
+        .arg("SYNC")
+        .query_async::<()>(connection)
+        .await
+        .map_err(|error| RemnantError::Adapter(format!("redis clear before restore: {error}")))?;
+    for entry in entries {
+        let ttl = if entry.ttl_ms > 0 { entry.ttl_ms } else { 0 };
+        redis::cmd("RESTORE")
+            .arg(&entry.key)
+            .arg(ttl)
+            .arg(&entry.payload)
+            .arg("REPLACE")
+            .query_async::<()>(connection)
+            .await
+            .map_err(|error| {
+                RemnantError::Adapter(format!(
+                    "redis restore {}: {error}",
+                    redis_label(&STANDARD.encode(&entry.key))
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+fn verify_entries(expected: &[DecodedRedisEntry], actual: &[RedisEntry]) -> Result<()> {
+    let expected = expected
+        .iter()
+        .map(|entry| (STANDARD.encode(&entry.key), entry))
+        .collect::<BTreeMap<_, _>>();
+    let actual = actual
+        .iter()
+        .map(|entry| (entry.key_base64.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    if expected.len() != actual.len() {
+        return Err(RemnantError::Adapter(format!(
+            "redis restore verification failed: expected {} keys, found {}",
+            expected.len(),
+            actual.len()
+        )));
+    }
+    for (key, expected_entry) in expected {
+        let actual_entry = actual.get(key.as_str()).ok_or_else(|| {
+            RemnantError::Adapter(format!(
+                "redis restore verification failed: missing key {}",
+                redis_label(&key)
+            ))
+        })?;
+        if actual_entry.kind != expected_entry.kind
+            || actual_entry.payload_base64 != STANDARD.encode(&expected_entry.payload)
+            || !ttl_matches(expected_entry.ttl_ms, actual_entry.ttl_ms)
+        {
+            return Err(RemnantError::Adapter(format!(
+                "redis restore verification failed for key {}",
+                redis_label(&key)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ttl_matches(expected: i64, actual: i64) -> bool {
+    match expected {
+        -1 => actual == -1,
+        value if value > 0 => {
+            actual > 0 && actual <= value && value.saturating_sub(actual) <= TTL_RESTORE_DRIFT_MS
+        }
+        _ => false,
+    }
+}
+
+fn redis_object_id_from_base64(key_base64: &str) -> String {
+    match STANDARD.decode(key_base64) {
+        Ok(key) => format!("redis:{}", URL_SAFE_NO_PAD.encode(key)),
+        Err(_) => format!("redis:invalid-{key_base64}"),
+    }
+}
+
+fn redis_group(key_base64: &str) -> String {
+    let Ok(key) = STANDARD.decode(key_base64) else {
+        return "redis:invalid".to_string();
+    };
+    let prefix = key.split(|byte| *byte == b':').next().unwrap_or(&key);
+    format!("redis:{}", URL_SAFE_NO_PAD.encode(prefix))
+}
+
+fn redis_label(key_base64: &str) -> String {
+    STANDARD
+        .decode(key_base64)
+        .ok()
+        .and_then(|key| String::from_utf8(key).ok())
+        .filter(|key| key.chars().all(|character| !character.is_control()))
+        .unwrap_or_else(|| format!("base64:{key_base64}"))
 }
 
 fn redacted_endpoint(url: &str) -> String {
     url.split('@').next_back().unwrap_or(url).to_string()
 }
 
-#[allow(dead_code)]
-fn _entry_fingerprint(entry: &RedisEntry) -> String {
-    digest_bytes(entry.payload_base64.as_bytes())
+fn validate_snapshot(snapshot: &SourceSnapshot, source: &str, kind: &str) -> Result<()> {
+    if snapshot.source != source || snapshot.kind != kind {
+        return Err(RemnantError::InvalidSnapshot(format!(
+            "expected {kind} snapshot for {source}, got {} snapshot for {}",
+            snapshot.kind, snapshot.source
+        )));
+    }
+    if snapshot.format_version != SNAPSHOT_FORMAT_VERSION {
+        return Err(RemnantError::InvalidSnapshot(format!(
+            "Redis snapshot format version {} is not supported; expected {SNAPSHOT_FORMAT_VERSION}",
+            snapshot.format_version
+        )));
+    }
+    let actual_fingerprint = crate::model::fingerprint(&snapshot.payload);
+    if actual_fingerprint != snapshot.fingerprint {
+        return Err(RemnantError::InvalidSnapshot(format!(
+            "fingerprint mismatch for {source}: expected {}, got {actual_fingerprint}",
+            snapshot.fingerprint
+        )));
+    }
+    Ok(())
 }
 
-#[allow(dead_code)]
-fn _entry_map(entries: &[RedisEntry]) -> HashMap<&str, &RedisEntry> {
-    entries
-        .iter()
-        .map(|entry| (entry.key.as_str(), entry))
-        .collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binary_keys_have_safe_distinct_object_ids() {
+        let first = STANDARD.encode([0, 255]);
+        let second = STANDARD.encode([0, 254]);
+
+        assert_ne!(
+            redis_object_id_from_base64(&first),
+            redis_object_id_from_base64(&second)
+        );
+        assert_eq!(redis_label(&first), format!("base64:{first}"));
+    }
+
+    #[test]
+    fn ttl_verification_allows_restore_drift_but_not_a_changed_expiry() {
+        assert!(ttl_matches(10_000, 9_999));
+        assert!(ttl_matches(10_000, 5_000));
+        assert!(!ttl_matches(10_000, 4_999));
+        assert!(!ttl_matches(10_000, -1));
+        assert!(ttl_matches(-1, -1));
+    }
+
+    #[test]
+    fn invalid_binary_snapshot_data_is_rejected_before_mutation() {
+        let entries = vec![RedisEntry {
+            key_base64: "not base64".to_string(),
+            kind: "string".to_string(),
+            ttl_ms: -1,
+            payload_base64: STANDARD.encode(b"payload"),
+        }];
+
+        assert!(decode_entries(&entries).is_err());
+    }
 }

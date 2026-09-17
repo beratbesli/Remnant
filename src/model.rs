@@ -76,10 +76,13 @@ pub struct Snapshot {
     pub fingerprint: String,
 }
 
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
 
 fn default_snapshot_format_version() -> u32 {
-    SNAPSHOT_FORMAT_VERSION
+    // Version 1 did not encode Redis keys byte-safely. Missing markers are
+    // therefore treated as legacy data and rejected by the current restore
+    // path instead of being silently misinterpreted.
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

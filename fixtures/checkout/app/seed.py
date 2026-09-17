@@ -48,7 +48,14 @@ with psycopg.connect(database_url) as connection:
 cache = redis.Redis.from_url(redis_url, decode_responses=True)
 cache.flushdb()
 cache.set("user:174:plan", "legacy")
+cache.set(b"binary:\x00\xff", b"\x00value\xff")
+cache.set("expiring:noise", "value", px=60_000)
+cache.hset("type:hash", mapping={"field": "value"})
+cache.rpush("type:list", "first", "second")
+cache.sadd("type:set", "member-a", "member-b")
+cache.zadd("type:zset", {"member": 1.5})
+cache.xadd("type:stream", {"field": "value"})
 for key_number in range(100):
     cache.set(f"noise:{key_number}", f"value-{key_number}")
 
-print("seeded 101 users, 51 subscriptions, and 101 Redis keys")
+print("seeded 101 users, 51 subscriptions, and 108 Redis keys")
