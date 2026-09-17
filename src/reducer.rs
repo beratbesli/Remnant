@@ -10,7 +10,7 @@ use crate::error::{RemnantError, Result};
 use crate::model::{Snapshot, StateObject};
 use crate::oracle::{OracleOutcome, OracleResult, OracleRunner};
 use crate::persistence::SessionStore;
-use crate::snapshot::{capture_sources, restore_sources};
+use crate::snapshot::{capture_sources, restore_sources, verify_sources};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -114,16 +114,14 @@ impl<'a> ReductionEngine<'a> {
         strategy: impl Into<String>,
     ) -> Result<ReductionSession> {
         let (baseline, objects) = capture_sources(self.sources).await?;
-        restore_sources(self.sources, &baseline, None).await?;
-        let baseline_oracle = self.oracle.run().await?;
-        restore_sources(self.sources, &baseline, None).await?;
+        let retained_ids = objects.iter().map(|object| object.id.clone()).collect();
+        let baseline_oracle = self.execute_candidate(&baseline, &retained_ids).await?;
         if baseline_oracle.outcome != OracleOutcome::FailureReproduced {
             return Err(RemnantError::InvalidConfig(format!(
                 "cannot start reduction: baseline oracle outcome was {:?}",
                 baseline_oracle.outcome
             )));
         }
-        let retained_ids = objects.iter().map(|object| object.id.clone()).collect();
         let now = Utc::now();
         let session = ReductionSession {
             id: format!("session-{}", Uuid::new_v4()),
@@ -273,11 +271,7 @@ impl<'a> ReductionEngine<'a> {
         removed: &BTreeSet<String>,
     ) -> Result<Experiment> {
         let started = Instant::now();
-        restore_sources(self.sources, &session.baseline, Some(candidate)).await?;
-        let oracle_result = self.oracle.run().await;
-        let restore_result = restore_sources(self.sources, &session.baseline, None).await;
-        restore_result?;
-        let oracle_result = oracle_result?;
+        let oracle_result = self.execute_candidate(&session.baseline, candidate).await?;
         if oracle_result.outcome == OracleOutcome::TimedOut {
             return Err(RemnantError::Unsupported(
                 "oracle timed out during reduction; no decision was recorded".to_string(),
@@ -293,6 +287,55 @@ impl<'a> ReductionEngine<'a> {
             baseline_fingerprint: session.baseline.fingerprint.clone(),
             recorded_at: Utc::now(),
         })
+    }
+
+    /// Run one candidate through the only mutation lifecycle used by reduction.
+    /// No caller receives an oracle result unless the verified full baseline has
+    /// been restored afterwards.
+    async fn execute_candidate(
+        &self,
+        baseline: &Snapshot,
+        candidate: &BTreeSet<String>,
+    ) -> Result<OracleResult> {
+        verify_sources(self.sources, baseline, None).await?;
+
+        if let Err(error) = restore_sources(self.sources, baseline, Some(candidate)).await {
+            return Err(self
+                .recover_after_failed_step(baseline, "candidate restore", error)
+                .await);
+        }
+        if let Err(error) = verify_sources(self.sources, baseline, Some(candidate)).await {
+            return Err(self
+                .recover_after_failed_step(baseline, "candidate restore verification", error)
+                .await);
+        }
+
+        let oracle_result = self.oracle.run().await;
+        match self.restore_baseline_and_verify(baseline).await {
+            Ok(()) => oracle_result,
+            Err(recovery_error) => Err(RemnantError::UnsafeOperation(format!(
+                "baseline recovery failed after oracle execution; experiment decision was discarded: {recovery_error}"
+            ))),
+        }
+    }
+
+    async fn restore_baseline_and_verify(&self, baseline: &Snapshot) -> Result<()> {
+        restore_sources(self.sources, baseline, None).await?;
+        verify_sources(self.sources, baseline, None).await
+    }
+
+    async fn recover_after_failed_step(
+        &self,
+        baseline: &Snapshot,
+        step: &str,
+        error: RemnantError,
+    ) -> RemnantError {
+        match self.restore_baseline_and_verify(baseline).await {
+            Ok(()) => error,
+            Err(recovery_error) => RemnantError::UnsafeOperation(format!(
+                "{step} failed and verified baseline recovery also failed: {recovery_error}"
+            )),
+        }
     }
 }
 
@@ -327,6 +370,7 @@ mod tests {
     struct FakeSource {
         state: Arc<Mutex<BTreeSet<String>>>,
         objects: Vec<StateObject>,
+        fail_partial_restore: bool,
     }
 
     #[async_trait]
@@ -349,13 +393,21 @@ mod tests {
         }
 
         async fn snapshot(&self) -> Result<crate::model::SourceSnapshot> {
+            let state = self.state.lock().expect("state lock");
+            let objects = self
+                .objects
+                .iter()
+                .filter(|object| state.contains(&object.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            let payload = json!({"objects": objects});
             Ok(SourceSnapshot {
                 source: "fake".to_string(),
                 kind: "fake".to_string(),
                 captured_at: Utc::now(),
-                fingerprint: "fake-fingerprint".to_string(),
-                object_count: self.objects.len(),
-                payload: json!({"objects": self.objects}),
+                fingerprint: crate::model::fingerprint(&payload),
+                object_count: payload["objects"].as_array().map_or(0, Vec::len),
+                payload,
             })
         }
 
@@ -376,6 +428,13 @@ mod tests {
                     .map(|object| object.id.clone())
                     .collect()
             });
+            if self.fail_partial_restore
+                && retained.is_some_and(|ids| ids.len() < self.objects.len())
+            {
+                return Err(RemnantError::Adapter(
+                    "simulated partial restore failure".to_string(),
+                ));
+            }
             Ok(())
         }
     }
@@ -424,13 +483,19 @@ mod tests {
             .map(|id| StateObject::new(id, "fake", "objects", "item", id, json!({"id": id})))
             .collect::<Vec<_>>();
         let state = Arc::new(Mutex::new(
-            objects.iter().map(|object| object.id.clone()).collect(),
+            objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect::<BTreeSet<_>>(),
         ));
         let source: Box<dyn StateSource> = Box::new(FakeSource {
             state: Arc::clone(&state),
             objects,
+            fail_partial_restore: false,
         });
-        let oracle = FakeOracle { state };
+        let oracle = FakeOracle {
+            state: Arc::clone(&state),
+        };
         let directory = tempdir().expect("tempdir");
         let store = SessionStore::new(directory.path());
         let sources = vec![source];
@@ -447,5 +512,137 @@ mod tests {
             "1-minimal"
         );
         assert!(store.load(&session.id).is_ok());
+        assert_eq!(
+            *state.lock().expect("state lock"),
+            session
+                .objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect()
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_to_mutate_when_the_baseline_has_drifted() {
+        let objects = ["a", "b"]
+            .into_iter()
+            .map(|id| StateObject::new(id, "fake", "objects", "item", id, json!({"id": id})))
+            .collect::<Vec<_>>();
+        let state = Arc::new(Mutex::new(
+            objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect::<BTreeSet<_>>(),
+        ));
+        let source: Box<dyn StateSource> = Box::new(FakeSource {
+            state: Arc::clone(&state),
+            objects,
+            fail_partial_restore: false,
+        });
+        let oracle = FakeOracle {
+            state: Arc::clone(&state),
+        };
+        let directory = tempdir().expect("tempdir");
+        let store = SessionStore::new(directory.path());
+        let sources = vec![source];
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100);
+        let mut session = engine.begin("test", "ddmin").await.expect("begin");
+
+        state.lock().expect("state lock").remove("a");
+        let error = engine
+            .run(&mut session)
+            .await
+            .expect_err("drift must stop reduction");
+
+        assert!(error.to_string().contains("state verification failed"));
+        assert_eq!(session.status, SessionStatus::Failed);
+        assert!(!state.lock().expect("state lock").contains("a"));
+    }
+
+    #[tokio::test]
+    async fn recovers_the_baseline_after_a_partial_candidate_restore_failure() {
+        let objects = ["a", "b"]
+            .into_iter()
+            .map(|id| StateObject::new(id, "fake", "objects", "item", id, json!({"id": id})))
+            .collect::<Vec<_>>();
+        let state = Arc::new(Mutex::new(
+            objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect::<BTreeSet<_>>(),
+        ));
+        let expected = state.lock().expect("state lock").clone();
+        let source: Box<dyn StateSource> = Box::new(FakeSource {
+            state: Arc::clone(&state),
+            objects,
+            fail_partial_restore: true,
+        });
+        let oracle = FakeOracle {
+            state: Arc::clone(&state),
+        };
+        let directory = tempdir().expect("tempdir");
+        let store = SessionStore::new(directory.path());
+        let sources = vec![source];
+        let engine = ReductionEngine::new(&sources, &oracle, &store, 100);
+        let session = engine.begin("test", "ddmin").await.expect("begin");
+
+        let error = engine
+            .test_candidate(
+                &session,
+                &BTreeSet::new(),
+                &BTreeSet::from(["a".to_string()]),
+            )
+            .await
+            .expect_err("failed candidate restore must be surfaced");
+
+        assert!(
+            error
+                .to_string()
+                .contains("simulated partial restore failure")
+        );
+        assert_eq!(*state.lock().expect("state lock"), expected);
+    }
+
+    struct UnavailableOracle;
+
+    #[async_trait]
+    impl OracleRunner for UnavailableOracle {
+        async fn run(&self) -> Result<OracleResult> {
+            Err(RemnantError::Unsupported(
+                "simulated oracle start failure".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn recovers_the_baseline_when_the_oracle_cannot_start() {
+        let objects = ["a", "b"]
+            .into_iter()
+            .map(|id| StateObject::new(id, "fake", "objects", "item", id, json!({"id": id})))
+            .collect::<Vec<_>>();
+        let state = Arc::new(Mutex::new(
+            objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect::<BTreeSet<_>>(),
+        ));
+        let expected = state.lock().expect("state lock").clone();
+        let source: Box<dyn StateSource> = Box::new(FakeSource {
+            state: Arc::clone(&state),
+            objects,
+            fail_partial_restore: false,
+        });
+        let directory = tempdir().expect("tempdir");
+        let store = SessionStore::new(directory.path());
+        let sources = vec![source];
+        let engine = ReductionEngine::new(&sources, &UnavailableOracle, &store, 100);
+
+        let error = engine
+            .begin("test", "ddmin")
+            .await
+            .expect_err("unavailable oracle must stop capture");
+
+        assert!(error.to_string().contains("simulated oracle start failure"));
+        assert_eq!(*state.lock().expect("state lock"), expected);
     }
 }

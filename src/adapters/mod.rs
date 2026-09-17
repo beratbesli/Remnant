@@ -1,10 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 
 use async_trait::async_trait;
 
 use crate::config::{ProjectConfig, SourceConfig};
-use crate::error::Result;
+use crate::error::{RemnantError, Result};
 use crate::model::{SourceDescription, SourceSnapshot, StateObject};
 
 pub mod postgres;
@@ -22,6 +22,40 @@ pub trait StateSource: Send + Sync {
         snapshot: &SourceSnapshot,
         retained: Option<&BTreeSet<String>>,
     ) -> Result<()>;
+
+    /// Check that the source now contains exactly the state selected from a
+    /// snapshot. Adapters may override this when their live representation has
+    /// expected volatility (for example, Redis key TTLs).
+    async fn verify_restored(
+        &self,
+        snapshot: &SourceSnapshot,
+        retained: Option<&BTreeSet<String>>,
+    ) -> Result<()> {
+        let expected = object_fingerprints(self.objects_from_snapshot(snapshot)?, retained);
+        let actual_snapshot = self.snapshot().await?;
+        let actual = object_fingerprints(self.objects_from_snapshot(&actual_snapshot)?, None);
+        if actual == expected {
+            return Ok(());
+        }
+
+        Err(RemnantError::Adapter(format!(
+            "{} restore verification failed: expected {} objects, found {}",
+            self.name(),
+            expected.len(),
+            actual.len()
+        )))
+    }
+}
+
+fn object_fingerprints(
+    objects: Vec<StateObject>,
+    retained: Option<&BTreeSet<String>>,
+) -> BTreeMap<String, String> {
+    objects
+        .into_iter()
+        .filter(|object| retained.is_none_or(|ids| ids.contains(&object.id)))
+        .map(|object| (object.id, object.fingerprint))
+        .collect()
 }
 
 pub fn from_config(config: &ProjectConfig) -> Result<Vec<Box<dyn StateSource>>> {
