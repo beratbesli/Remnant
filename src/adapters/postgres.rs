@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -22,6 +22,8 @@ pub struct PostgresAdapter {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PostgresSnapshot {
     pub tables: Vec<PostgresTableSnapshot>,
+    #[serde(default)]
+    pub sequences: Vec<PostgresSequenceSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -31,6 +33,14 @@ pub struct PostgresTableSnapshot {
     pub primary_key: Vec<String>,
     pub foreign_keys: Vec<PostgresForeignKey>,
     pub rows: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PostgresSequenceSnapshot {
+    pub schema: String,
+    pub sequence: String,
+    pub last_value: i64,
+    pub is_called: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,8 +162,9 @@ impl PostgresAdapter {
     ) -> Result<PostgresTableSnapshot> {
         let primary_key = self.primary_key(client, schema, table).await?;
         let foreign_keys = self.foreign_keys(client, schema, table).await?;
+        let ordering = row_ordering(&primary_key);
         let query = format!(
-            "SELECT to_jsonb(t) FROM {} t",
+            "SELECT to_jsonb(t) FROM {} t ORDER BY {ordering}",
             qualified_identifier(schema, table)
         );
         let rows = client.query(&query, &[]).await.map_err(|error| {
@@ -165,6 +176,46 @@ impl PostgresAdapter {
             primary_key,
             foreign_keys,
             rows: rows.into_iter().map(|row| row.get(0)).collect(),
+        })
+    }
+
+    async fn sequence_names(&self, client: &Client) -> Result<Vec<(String, String)>> {
+        let rows = client
+            .query(
+                "SELECT sequence_schema, sequence_name
+                 FROM information_schema.sequences
+                 WHERE sequence_schema NOT IN ('pg_catalog', 'information_schema')
+                   AND ($1::text IS NULL OR sequence_schema = $1)
+                 ORDER BY sequence_schema, sequence_name",
+                &[&self.schema],
+            )
+            .await
+            .map_err(|error| {
+                RemnantError::Adapter(format!("postgres sequence discovery: {error}"))
+            })?;
+        Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
+    }
+
+    async fn sequence_snapshot(
+        &self,
+        client: &Client,
+        schema: &str,
+        sequence: &str,
+    ) -> Result<PostgresSequenceSnapshot> {
+        let query = format!(
+            "SELECT last_value, is_called FROM {}",
+            qualified_identifier(schema, sequence)
+        );
+        let row = client.query_one(&query, &[]).await.map_err(|error| {
+            RemnantError::Adapter(format!(
+                "postgres sequence capture {schema}.{sequence}: {error}"
+            ))
+        })?;
+        Ok(PostgresSequenceSnapshot {
+            schema: schema.to_string(),
+            sequence: sequence.to_string(),
+            last_value: row.get(0),
+            is_called: row.get(1),
         })
     }
 
@@ -234,8 +285,16 @@ impl StateSource for PostgresAdapter {
         for (schema, table) in tables {
             captured.push(self.table_snapshot(&client, &schema, &table).await?);
         }
-        let payload = serde_json::to_value(PostgresSnapshot { tables: captured })
-            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        let sequences = self.sequence_names(&client).await?;
+        let mut captured_sequences = Vec::with_capacity(sequences.len());
+        for (schema, sequence) in sequences {
+            captured_sequences.push(self.sequence_snapshot(&client, &schema, &sequence).await?);
+        }
+        let payload = serde_json::to_value(PostgresSnapshot {
+            tables: captured,
+            sequences: captured_sequences,
+        })
+        .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
         let fingerprint = crate::model::fingerprint(&payload);
         let decoded: PostgresSnapshot = serde_json::from_value(payload.clone())
             .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
@@ -265,7 +324,11 @@ impl StateSource for PostgresAdapter {
             .await
             .map_err(|error| RemnantError::Adapter(format!("postgres begin restore: {error}")))?;
 
-        let result = restore_tables(&client, &payload, retained).await;
+        let result = async {
+            restore_tables(&client, &payload, retained).await?;
+            restore_sequences(&client, &payload.sequences).await
+        }
+        .await;
         match result {
             Ok(()) => client.batch_execute("COMMIT").await.map_err(|error| {
                 RemnantError::Adapter(format!("postgres commit restore: {error}"))
@@ -274,6 +337,33 @@ impl StateSource for PostgresAdapter {
                 let _ = client.batch_execute("ROLLBACK").await;
                 Err(error)
             }
+        }
+    }
+
+    async fn verify_restored(
+        &self,
+        snapshot: &SourceSnapshot,
+        retained: Option<&BTreeSet<String>>,
+    ) -> Result<()> {
+        validate_snapshot(snapshot, &self.name, "postgres")?;
+        let mut expected: PostgresSnapshot = serde_json::from_value(snapshot.payload.clone())
+            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        for table in &mut expected.tables {
+            let identity = table.clone();
+            table.rows.retain(|row| {
+                retained.is_none_or(|ids| ids.contains(&postgres_object_id(&identity, row)))
+            });
+        }
+        let actual_snapshot = self.snapshot().await?;
+        let actual: PostgresSnapshot = serde_json::from_value(actual_snapshot.payload)
+            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(RemnantError::Adapter(
+                "postgres restore verification failed: captured state differs from selected snapshot"
+                    .to_string(),
+            ))
         }
     }
 }
@@ -318,6 +408,25 @@ async fn restore_tables(
     Ok(())
 }
 
+async fn restore_sequences(client: &Client, sequences: &[PostgresSequenceSnapshot]) -> Result<()> {
+    for sequence in sequences {
+        let identifier = qualified_identifier(&sequence.schema, &sequence.sequence);
+        client
+            .execute(
+                "SELECT setval($1::regclass, $2, $3)",
+                &[&identifier, &sequence.last_value, &sequence.is_called],
+            )
+            .await
+            .map_err(|error| {
+                RemnantError::Adapter(format!(
+                    "postgres restore sequence {}.{}: {error}",
+                    sequence.schema, sequence.sequence
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 fn dependency_order(snapshot: &PostgresSnapshot) -> Result<Vec<usize>> {
     let indexes: HashMap<(&str, &str), usize> = snapshot
         .tables
@@ -325,7 +434,7 @@ fn dependency_order(snapshot: &PostgresSnapshot) -> Result<Vec<usize>> {
         .enumerate()
         .map(|(index, table)| ((table.schema.as_str(), table.table.as_str()), index))
         .collect();
-    let mut outgoing: Vec<HashSet<usize>> = vec![HashSet::new(); snapshot.tables.len()];
+    let mut outgoing: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); snapshot.tables.len()];
     let mut incoming = vec![0usize; snapshot.tables.len()];
     for (index, table) in snapshot.tables.iter().enumerate() {
         for foreign_key in &table.foreign_keys {
@@ -382,6 +491,18 @@ fn postgres_object_id(table: &PostgresTableSnapshot, row: &Value) -> String {
     format!("postgres:{}.{}:{key}", table.schema, table.table)
 }
 
+fn row_ordering(primary_key: &[String]) -> String {
+    if primary_key.is_empty() {
+        "to_jsonb(t)::text".to_string()
+    } else {
+        primary_key
+            .iter()
+            .map(|column| format!("t.{}", quote_identifier(column)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 fn value_key(value: &Value) -> String {
     serde_json::to_string(value).expect("json value serializes")
 }
@@ -419,4 +540,43 @@ fn validate_snapshot(snapshot: &SourceSnapshot, source: &str, kind: &str) -> Res
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_ordering_is_deterministic_and_quotes_primary_keys() {
+        assert_eq!(row_ordering(&[]), "to_jsonb(t)::text");
+        assert_eq!(
+            row_ordering(&["tenant_id".to_string(), "item\"id".to_string()]),
+            "t.\"tenant_id\", t.\"item\"\"id\""
+        );
+    }
+
+    #[test]
+    fn dependency_order_keeps_independent_tables_in_snapshot_order() {
+        let snapshot = PostgresSnapshot {
+            tables: vec![
+                PostgresTableSnapshot {
+                    schema: "public".to_string(),
+                    table: "alpha".to_string(),
+                    primary_key: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    rows: Vec::new(),
+                },
+                PostgresTableSnapshot {
+                    schema: "public".to_string(),
+                    table: "beta".to_string(),
+                    primary_key: Vec::new(),
+                    foreign_keys: Vec::new(),
+                    rows: Vec::new(),
+                },
+            ],
+            sequences: Vec::new(),
+        };
+
+        assert_eq!(dependency_order(&snapshot).expect("order"), vec![0, 1]);
+    }
 }
