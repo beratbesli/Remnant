@@ -132,6 +132,24 @@ impl StateSource for RedisAdapter {
         &self.name
     }
 
+    async fn target_identity(&self) -> Result<serde_json::Value> {
+        let mut connection = self.connection().await?;
+        let info: String = redis::cmd("INFO")
+            .arg("server")
+            .query_async(&mut connection)
+            .await
+            .map_err(|error| RemnantError::Adapter(format!("redis target identity: {error}")))?;
+        let run_id = info
+            .lines()
+            .find_map(|line| line.strip_prefix("run_id:"))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                RemnantError::Adapter("redis server did not report run_id".to_string())
+            })?;
+        Ok(json!({"kind": "redis", "run_id": run_id, "database": self.database}))
+    }
+
     async fn describe(&self) -> Result<SourceDescription> {
         let entries = self.capture_entries().await?;
         Ok(SourceDescription {

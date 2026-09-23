@@ -33,4 +33,6 @@ Remnant reads YAML from remnant.yaml by default.
 
 Credentials are never generated into this file. url_env names environment variables resolved at runtime. Supported duration suffixes are ms, s, and m. The oracle is executed by the platform shell, so keep the command in a reviewed script for repeatability.
 
-The PostgreSQL adapter enumerates non-system base tables and captures rows as JSON. Tables with primary keys use key values for stable object IDs; tables without primary keys use a row-content digest. Redis keys are captured with native serialized payloads and TTLs, allowing type-preserving restoration.
+When `require_fingerprint` is true, run `remnant doctor` to read the connected target fingerprint, verify the databases, and pass `--target-fingerprint <value>` to `capture`, `reduce`, `resume`, and `replay`. The fingerprint is built from identities queried from the connected PostgreSQL database and Redis server, not from snapshot contents. Redis restarts change its run ID, so obtain a fresh fingerprint after a restart. `--allow-non-local` does not bypass fingerprint confirmation. Unknown single-label DNS names are treated as non-local.
+
+The PostgreSQL adapter enumerates non-system base tables and captures rows as JSON, along with sequence `last_value` and `is_called` state. Tables with primary keys use key values for stable object IDs; tables without primary keys use a row-content digest. Redis keys are captured with native serialized payloads and TTLs, allowing type-preserving restoration.

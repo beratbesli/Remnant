@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::env;
 
 use async_trait::async_trait;
+use serde_json::Value;
 
 use crate::config::{ProjectConfig, SourceConfig};
 use crate::error::Result;
@@ -13,6 +14,8 @@ pub mod redis;
 #[async_trait]
 pub trait StateSource: Send + Sync {
     fn name(&self) -> &str;
+    /// Identity read from the connected service, rather than inferred from its URL.
+    async fn target_identity(&self) -> Result<Value>;
     async fn describe(&self) -> Result<SourceDescription>;
     async fn enumerate_state(&self) -> Result<Vec<StateObject>>;
     async fn snapshot(&self) -> Result<SourceSnapshot>;

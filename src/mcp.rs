@@ -11,7 +11,7 @@ use remnant::oracle::Oracle;
 use remnant::persistence::SessionStore;
 use remnant::reducer::{ReductionEngine, ReductionSession};
 use remnant::report::ReductionReport;
-use remnant::safety::ensure_mutation_allowed;
+use remnant::safety::{ensure_mutation_allowed, target_fingerprint};
 
 pub async fn serve(project: PathBuf) -> Result<()> {
     let stdin = BufReader::new(io::stdin());
@@ -115,6 +115,10 @@ async fn call_tool(project: &PathBuf, name: &str, arguments: &Value) -> Result<V
             "missing_environment_variables": config.missing_environment_variables(),
             "oracle_command": config.oracle.command,
         })),
+        "get_target_fingerprint" => {
+            let sources = from_config(&config)?;
+            Ok(json!({"target_fingerprint": target_fingerprint(&sources).await?}))
+        }
         "verify_failure" => {
             let result = Oracle::new(config.oracle).run().await?;
             Ok(serde_json::to_value(result)?)
@@ -138,8 +142,14 @@ async fn call_tool(project: &PathBuf, name: &str, arguments: &Value) -> Result<V
             }))
         }
         "start_reduction" => {
-            ensure_mutation_allowed(&config, false)?;
             let sources = from_config(&config)?;
+            ensure_mutation_allowed(
+                &config,
+                &sources,
+                false,
+                arguments["target_fingerprint"].as_str(),
+            )
+            .await?;
             let oracle = Oracle::new(config.oracle.clone());
             let engine =
                 ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
@@ -154,9 +164,15 @@ async fn call_tool(project: &PathBuf, name: &str, arguments: &Value) -> Result<V
             }))
         }
         "run_reduction" => {
-            ensure_mutation_allowed(&config, false)?;
             let session_id = required_session_id(arguments)?;
             let sources = from_config(&config)?;
+            ensure_mutation_allowed(
+                &config,
+                &sources,
+                false,
+                arguments["target_fingerprint"].as_str(),
+            )
+            .await?;
             let oracle = Oracle::new(config.oracle.clone());
             let mut session = store.load(&session_id)?;
             let engine =
@@ -194,17 +210,22 @@ fn tool_definitions() -> Vec<Value> {
     let no_args = json!({"type": "object", "properties": {}, "additionalProperties": false});
     let session_args = json!({
         "type": "object",
-        "properties": {"session_id": {"type": "string"}},
+        "properties": {"session_id": {"type": "string"}, "target_fingerprint": {"type": "string"}},
         "required": ["session_id"],
+        "additionalProperties": false
+    });
+    let fingerprint_args = json!({
+        "type": "object", "properties": {"target_fingerprint": {"type": "string"}},
         "additionalProperties": false
     });
     vec![
         json!({"name": "get_project_status", "description": "Return project and persisted session status.", "inputSchema": no_args}),
         json!({"name": "doctor", "description": "Validate Remnant configuration without mutating state.", "inputSchema": no_args}),
+        json!({"name": "get_target_fingerprint", "description": "Read the fingerprint of the connected targets for explicit confirmation.", "inputSchema": no_args}),
         json!({"name": "verify_failure", "description": "Run the configured failure oracle.", "inputSchema": no_args}),
         json!({"name": "list_state_sources", "description": "Describe configured state sources and capabilities.", "inputSchema": no_args}),
         json!({"name": "inspect_state", "description": "Inspect captured objects and deterministic relationship hypotheses.", "inputSchema": session_args}),
-        json!({"name": "start_reduction", "description": "Verify the baseline and capture a resumable reduction session.", "inputSchema": no_args}),
+        json!({"name": "start_reduction", "description": "Verify the baseline and capture a resumable reduction session.", "inputSchema": fingerprint_args}),
         json!({"name": "run_reduction", "description": "Run or resume experiments for a captured session.", "inputSchema": session_args}),
         json!({"name": "get_reduction_status", "description": "Read persisted reduction progress.", "inputSchema": session_args}),
         json!({"name": "generate_report", "description": "Generate the structured reduction report.", "inputSchema": session_args}),
