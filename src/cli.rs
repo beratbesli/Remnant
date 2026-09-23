@@ -12,7 +12,7 @@ use remnant::oracle::{Oracle, OracleOutcome};
 use remnant::persistence::SessionStore;
 use remnant::reducer::{ReductionEngine, ReductionSession};
 use remnant::report::ReductionReport;
-use remnant::safety::ensure_mutation_allowed;
+use remnant::safety::{ensure_mutation_allowed, target_fingerprint};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -32,6 +32,10 @@ pub struct Cli {
     /// Explicitly permit mutating targets that are not recognized as local.
     #[arg(long, global = true)]
     allow_non_local: bool,
+
+    /// Confirm the fingerprint of the connected targets before modifying state.
+    #[arg(long, global = true)]
+    target_fingerprint: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -128,9 +132,15 @@ async fn doctor(path: &PathBuf, json: bool) -> Result<()> {
         .await
         .is_ok_and(|output| output.status.success());
     let mut sources_report = Vec::new();
+    let mut connected_fingerprint = None;
+    let mut connected_fingerprint_error = None;
     if missing.is_empty() {
         match from_config(&config) {
             Ok(sources) => {
+                match target_fingerprint(&sources).await {
+                    Ok(fingerprint) => connected_fingerprint = Some(fingerprint),
+                    Err(error) => connected_fingerprint_error = Some(error.to_string()),
+                }
                 for source in sources {
                     match source.describe().await {
                         Ok(description) => sources_report.push(serde_json::json!({
@@ -156,6 +166,8 @@ async fn doctor(path: &PathBuf, json: bool) -> Result<()> {
         "valid": true,
         "project": config.project.name,
         "sources": sources_report,
+        "target_fingerprint": connected_fingerprint,
+        "target_fingerprint_error": connected_fingerprint_error,
         "missing_environment_variables": missing,
         "docker_available": docker_available,
         "oracle_command": config.oracle.command,
@@ -194,6 +206,12 @@ async fn doctor(path: &PathBuf, json: bool) -> Result<()> {
                 println!("  {error}");
             }
         }
+        if let Some(fingerprint) = report["target_fingerprint"].as_str() {
+            println!("Target fingerprint: {fingerprint}");
+        }
+        if let Some(error) = report["target_fingerprint_error"].as_str() {
+            println!("Target fingerprint unavailable: {error}");
+        }
     }
     Ok(())
 }
@@ -222,8 +240,14 @@ async fn verify(path: &PathBuf, json: bool) -> Result<()> {
 
 async fn capture(cli: &Cli) -> Result<()> {
     let config = load_config(&cli.project)?;
-    ensure_mutation_allowed(&config, cli.allow_non_local)?;
     let sources = from_config(&config)?;
+    ensure_mutation_allowed(
+        &config,
+        &sources,
+        cli.allow_non_local,
+        cli.target_fingerprint.as_deref(),
+    )
+    .await?;
     let oracle = Oracle::new(config.oracle.clone());
     let store = SessionStore::new(config.resolve_state_dir(&cli.project));
     let engine = ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
@@ -235,8 +259,14 @@ async fn capture(cli: &Cli) -> Result<()> {
 
 async fn reduce(cli: &Cli) -> Result<()> {
     let config = load_config(&cli.project)?;
-    ensure_mutation_allowed(&config, cli.allow_non_local)?;
     let sources = from_config(&config)?;
+    ensure_mutation_allowed(
+        &config,
+        &sources,
+        cli.allow_non_local,
+        cli.target_fingerprint.as_deref(),
+    )
+    .await?;
     let oracle = Oracle::new(config.oracle.clone());
     let store = SessionStore::new(config.resolve_state_dir(&cli.project));
     let engine = ReductionEngine::new(&sources, &oracle, &store, config.reduction.max_experiments);
@@ -249,8 +279,14 @@ async fn reduce(cli: &Cli) -> Result<()> {
 
 async fn resume(cli: &Cli, session_id: &str) -> Result<()> {
     let config = load_config(&cli.project)?;
-    ensure_mutation_allowed(&config, cli.allow_non_local)?;
     let sources = from_config(&config)?;
+    ensure_mutation_allowed(
+        &config,
+        &sources,
+        cli.allow_non_local,
+        cli.target_fingerprint.as_deref(),
+    )
+    .await?;
     let oracle = Oracle::new(config.oracle.clone());
     let store = SessionStore::new(config.resolve_state_dir(&cli.project));
     let mut session = store.load(session_id)?;
@@ -359,8 +395,14 @@ async fn replay(cli: &Cli, session_id: Option<String>, confirm: bool) -> Result<
         );
     }
     let config = load_config(&cli.project)?;
-    ensure_mutation_allowed(&config, cli.allow_non_local)?;
     let sources = from_config(&config)?;
+    ensure_mutation_allowed(
+        &config,
+        &sources,
+        cli.allow_non_local,
+        cli.target_fingerprint.as_deref(),
+    )
+    .await?;
     let store = SessionStore::new(config.resolve_state_dir(&cli.project));
     let session = load_selected(&store, session_id.as_deref())?;
     remnant::snapshot::restore_sources(&sources, &session.baseline, Some(&session.retained_ids))

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio_postgres::{Client, NoTls};
 
 use super::StateSource;
@@ -20,6 +20,16 @@ pub struct PostgresAdapter {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PostgresSnapshot {
     pub tables: Vec<PostgresTableSnapshot>,
+    #[serde(default)]
+    pub sequences: Vec<PostgresSequenceSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PostgresSequenceSnapshot {
+    pub schema: String,
+    pub name: String,
+    pub last_value: i64,
+    pub is_called: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -74,6 +84,43 @@ impl PostgresAdapter {
             .await
             .map_err(|error| RemnantError::Adapter(format!("postgres table discovery: {error}")))?;
         Ok(rows.iter().map(|row| (row.get(0), row.get(1))).collect())
+    }
+
+    async fn sequences(&self, client: &Client) -> Result<Vec<PostgresSequenceSnapshot>> {
+        let names = client
+            .query(
+                "SELECT n.nspname, c.relname FROM pg_catalog.pg_class c
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                 WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                   AND ($1::text IS NULL OR n.nspname = $1)
+                 ORDER BY n.nspname, c.relname",
+                &[&self.schema],
+            )
+            .await
+            .map_err(|error| {
+                RemnantError::Adapter(format!("postgres sequence discovery: {error}"))
+            })?;
+        let mut sequences = Vec::with_capacity(names.len());
+        for row in names {
+            let schema: String = row.get(0);
+            let name: String = row.get(1);
+            let query = format!(
+                "SELECT last_value, is_called FROM {}",
+                qualified_identifier(&schema, &name)
+            );
+            let state = client.query_one(&query, &[]).await.map_err(|error| {
+                RemnantError::Adapter(format!(
+                    "postgres sequence capture {schema}.{name}: {error}"
+                ))
+            })?;
+            sequences.push(PostgresSequenceSnapshot {
+                schema,
+                name,
+                last_value: state.get(0),
+                is_called: state.get(1),
+            });
+        }
+        Ok(sequences)
     }
 
     async fn primary_key(&self, client: &Client, schema: &str, table: &str) -> Result<Vec<String>> {
@@ -193,6 +240,31 @@ impl StateSource for PostgresAdapter {
         &self.name
     }
 
+    async fn target_identity(&self) -> Result<Value> {
+        let client = self.client().await?;
+        // Cluster identifier is available to privileged users; database OID and
+        // connected socket details remain available on managed installations.
+        let cluster_id = client
+            .query_one(
+                "SELECT system_identifier::text FROM pg_control_system()",
+                &[],
+            )
+            .await
+            .ok()
+            .map(|row| row.get::<_, String>(0));
+        let row = client.query_one(
+            "SELECT current_database(), (SELECT oid::bigint FROM pg_database WHERE datname = current_database()),
+                    COALESCE(inet_server_addr()::text, 'unix'), COALESCE(inet_server_port(), 0)",
+            &[],
+        ).await.map_err(|error| RemnantError::Adapter(format!("postgres target identity: {error}")))?;
+        Ok(json!({
+            "kind": "postgres", "database": row.get::<_, String>(0),
+            "database_oid": row.get::<_, i64>(1), "server_address": row.get::<_, String>(2),
+            "server_port": row.get::<_, i32>(3), "schema": self.schema.as_deref(),
+            "cluster_id": cluster_id,
+        }))
+    }
+
     async fn describe(&self) -> Result<SourceDescription> {
         let client = self.client().await?;
         let tables = self.table_names(&client).await?;
@@ -232,8 +304,11 @@ impl StateSource for PostgresAdapter {
         for (schema, table) in tables {
             captured.push(self.table_snapshot(&client, &schema, &table).await?);
         }
-        let payload = serde_json::to_value(PostgresSnapshot { tables: captured })
-            .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
+        let payload = serde_json::to_value(PostgresSnapshot {
+            tables: captured,
+            sequences: self.sequences(&client).await?,
+        })
+        .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
         let fingerprint = crate::model::fingerprint(&payload);
         let decoded: PostgresSnapshot = serde_json::from_value(payload.clone())
             .map_err(|error| RemnantError::InvalidSnapshot(error.to_string()))?;
@@ -311,6 +386,21 @@ async fn restore_tables(
                 RemnantError::Adapter(format!("postgres restore {object_id}: {error}"))
             })?;
         }
+    }
+    for sequence in &snapshot.sequences {
+        let name = qualified_identifier(&sequence.schema, &sequence.name);
+        client
+            .query_one(
+                "SELECT pg_catalog.setval($1::regclass, $2::bigint, $3::boolean)",
+                &[&name, &sequence.last_value, &sequence.is_called],
+            )
+            .await
+            .map_err(|error| {
+                RemnantError::Adapter(format!(
+                    "postgres restore sequence {}.{}: {error}",
+                    sequence.schema, sequence.name
+                ))
+            })?;
     }
     Ok(())
 }

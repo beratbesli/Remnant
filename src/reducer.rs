@@ -331,6 +331,9 @@ mod tests {
 
     #[async_trait]
     impl StateSource for FakeSource {
+        async fn target_identity(&self) -> Result<serde_json::Value> {
+            Ok(serde_json::json!({"fake": "fake"}))
+        }
         fn name(&self) -> &str {
             "fake"
         }

@@ -17,6 +17,8 @@ with psycopg.connect(database_url) as connection:
             )
             """
         )
+        cursor.execute("CREATE SEQUENCE IF NOT EXISTS fixture_sequence")
+        cursor.execute("SELECT setval('fixture_sequence', 451, true)")
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS subscriptions (
