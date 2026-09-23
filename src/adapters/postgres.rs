@@ -391,7 +391,7 @@ async fn restore_tables(
         let name = qualified_identifier(&sequence.schema, &sequence.name);
         client
             .query_one(
-                "SELECT pg_catalog.setval($1::regclass, $2::bigint, $3::boolean)",
+                "SELECT pg_catalog.setval($1::text::regclass, $2::bigint, $3::boolean)",
                 &[&name, &sequence.last_value, &sequence.is_called],
             )
             .await
